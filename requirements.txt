@@ -1,0 +1,12 @@
+pandas>=2.0
+numpy
+pyyaml
+requests
+feedparser
+tabulate
+rich
+lxml
+html5lib
+beautifulsoup4
+python-dateutil
+yfinance>=0.2.40

@@ -1,0 +1,41 @@
+universe: sample
+data_source: moex
+lookback_days: 500
+equity: 1000000
+risk_per_trade: 0.01
+max_positions: 8
+mr_capital_pct: 0.12
+strategies:
+- RaynerBB_MeanRev
+- ConnorsRSI2
+- TrendBreakout_200High
+- Donchian20
+- EMA_Pullback
+- Rayner_BOS_MTF
+plugins_dir: plugins
+news:
+  enabled: true
+  sources:
+  - google
+  - rbc
+  - interfax
+  - finam
+  - smartlab
+  - kommersant
+  - rss
+  min_sentiment: -0.35
+  lookback_days: 5
+telegram:
+  enabled: true
+  title: Rayner × MOEX Scanner
+api_keys:
+  finnhub: ''
+output:
+  console: true
+  csv: true
+strategy_params:
+  RaynerBB_MeanRev:
+    bb_std: 2.5
+    limit_pct: 0.03
+  ConnorsRSI2:
+    rsi_entry: 10

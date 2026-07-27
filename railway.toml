@@ -1,0 +1,12 @@
+# Railway configuration
+# Docs: https://docs.railway.com
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# For Cron Job service: set Cron Schedule in Railway dashboard
+# Example after MOEX close: 0 16 * * 1-5  (16:00 UTC ≈ 19:00 MSK)
+startCommand = "python main.py --universe blue --source moex"
+restartPolicyType = "NEVER"
