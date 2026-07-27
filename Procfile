@@ -1,2 +1,2 @@
-# Alternative for Railway / Heroku-style
-worker: python main.py --universe blue --source moex
+web: python web_app.py
+worker: python main.py --universe sample --source moex --no-news

@@ -10,3 +10,4 @@ html5lib
 beautifulsoup4
 python-dateutil
 yfinance>=0.2.40
+flask>=3.0
