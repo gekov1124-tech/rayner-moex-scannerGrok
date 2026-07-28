@@ -135,21 +135,34 @@ class MarketMonitor:
             key = self.signal_key(s)
             if key not in self._seen:
                 new_setups.append(s)
-                self._seen.add(key)
-        self._save_seen()
         self.last_new_count = len(new_setups)
 
+        tg_ok = False
         if send_telegram and new_setups:
             try:
                 from notify.telegram_alerts import send_setups_alert, is_telegram_configured
                 if is_telegram_configured():
-                    send_setups_alert(
+                    tg_ok = send_setups_alert(
                         new_setups,
                         title=f"🔔 Новые сэтапы MOEX ({self.last_scan_at})",
                     )
-                    print(f"[monitor] Telegram: {len(new_setups)} new setups")
+                    print(f"[monitor] Telegram new setups: {len(new_setups)} sent={tg_ok}")
+                else:
+                    print("[monitor] Telegram НЕ настроен — сэтапы не отправлены")
             except Exception as e:
                 print(f"[monitor] Telegram error: {e}")
+                tg_ok = False
+
+        # Mark as seen ONLY after successful send (or if TG disabled / not configured)
+        # so a failed send can be retried next cycle
+        from notify.telegram_alerts import is_telegram_configured
+        if new_setups:
+            if tg_ok or not send_telegram or not is_telegram_configured():
+                for s in new_setups:
+                    self._seen.add(self.signal_key(s))
+                self._save_seen()
+            else:
+                print("[monitor] Сэтапы НЕ помечены seen — повторная попытка в следующем цикле")
 
         # Paper journal: open virtual trades + update MTM / exits
         try:

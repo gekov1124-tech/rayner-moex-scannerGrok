@@ -150,6 +150,36 @@ def _setups_table(setups: list, with_chart_links: bool = True) -> str:
     )
 
 
+
+@app.get("/test_telegram")
+@app.route("/test_telegram", methods=["GET", "POST"])
+def test_telegram():
+    """One-click Telegram connectivity check."""
+    from notify.telegram_alerts import send_test_message
+    result = send_test_message()
+    if result.get("sent"):
+        body = f"""
+        <div class="card">
+          <p class="ok">✅ Тестовое сообщение отправлено в Telegram.</p>
+          <p class="muted">chat_id: {html.escape(str(result.get('chat_id_preview')))} ·
+             token: {html.escape(str(result.get('token_prefix')))}</p>
+          <p><a class="btn" href="/">← На главную</a></p>
+        </div>
+        """
+    else:
+        body = f"""
+        <div class="card">
+          <p class="warn">❌ Telegram не отправил сообщение.</p>
+          <p>{html.escape(str(result.get('error') or 'Смотрите логи Railway: строки [telegram]'))}</p>
+          <p class="muted">token_set={result.get('token_set')} · chat_id_set={result.get('chat_id_set')}</p>
+          <p class="muted">1) Проверьте Variables · 2) Напишите боту /start ·
+             3) Для группы CHAT_ID часто с минусом (−100…)</p>
+          <p><a class="btn" href="/">← На главную</a></p>
+        </div>
+        """
+    return _layout(body, title="Тест Telegram")
+
+
 @app.get("/")
 def index():
     st = monitor.status()
@@ -191,6 +221,7 @@ def index():
         <a class="btn secondary" href="/status">Статус JSON</a>
         <a class="btn secondary" href="/charts">Все графики</a>
         <a class="btn secondary" href="/journal">📒 Журнал</a>
+        <a class="btn secondary" href="/test_telegram">Тест Telegram</a>
       </form>
       <p class="muted">В торговые часы монитор сам сканирует и шлёт <b>только новые</b> сэтапы в Telegram.</p>
     </div>
@@ -205,14 +236,72 @@ def index():
     return _layout(body)
 
 
+def _run_scan_background(force_telegram_all: bool = True):
+    """Heavy scan in background thread — avoids Railway HTTP timeout."""
+    global _scanning, _last_result_html, _last_time, _last_count, _last_setups_json
+    try:
+        print("[scan] background scan started")
+        result = monitor.run_once(force=True, send_telegram=True)
+        setups = result.get("setups") or []
+        _last_count = len(setups)
+        _last_time = result.get("at") or now_msk().strftime("%Y-%m-%d %H:%M:%S")
+        _last_result_html = _setups_table(setups)
+        _last_setups_json = [s.to_dict() for s in setups]
+
+        # Manual / forced: always send FULL snapshot so user sees something in TG
+        if force_telegram_all:
+            try:
+                from notify.telegram_alerts import (
+                    send_setups_alert,
+                    send_telegram_message,
+                    is_telegram_configured,
+                )
+                if is_telegram_configured():
+                    if setups:
+                        ok = send_setups_alert(
+                            setups,
+                            title=f"Ручной скан MOEX ({_last_time})",
+                        )
+                        print(f"[scan] manual Telegram full snapshot sent={ok} n={len(setups)}")
+                    else:
+                        ok = send_telegram_message(
+                            f"<b>Ручной скан MOEX ({_last_time})</b>\n\n"
+                            "Сэтапов по текущим правилам не найдено."
+                        )
+                        print(f"[scan] manual Telegram empty notice sent={ok}")
+                else:
+                    print("[scan] Telegram не настроен — пропуск отправки")
+            except Exception as e:
+                print(f"[scan] manual TG error: {e}")
+
+        if result.get("error"):
+            print(f"[scan] finished with error: {result['error']}")
+        else:
+            print(f"[scan] finished total={result.get('total')} new={result.get('new')}")
+    except Exception as e:
+        print(f"[scan] background exception: {e}")
+        import traceback
+        traceback.print_exc()
+        monitor.last_error = str(e)
+    finally:
+        _scanning = False
+        try:
+            _scan_lock.release()
+        except Exception:
+            pass
+
+
 @app.route("/scan", methods=["GET", "POST"])
 def scan():
-    global _scanning, _last_result_html, _last_time, _last_count, _last_setups_json
+    global _scanning
 
     if _scanning:
         return _layout(
-            "<div class='card'><p class='warn'>Скан уже идёт. "
-            "<a href='/'>Обновить</a> через 1–2 мин.</p></div>"
+            "<div class='card'>"
+            "<p class='warn'>⏳ Скан уже идёт (1–3 мин).</p>"
+            "<p>Страница обновится сама. Или <a href='/'>откройте главную</a>.</p>"
+            "<meta http-equiv='refresh' content='15;url=/' />"
+            "</div>"
         )
 
     if not _scan_lock.acquire(blocking=False):
@@ -222,55 +311,27 @@ def scan():
         )
 
     _scanning = True
-    try:
-        # Manual scan: force + telegram for all current (or only new via monitor)
-        only_new = request.args.get("only_new") == "1"
-        result = monitor.run_once(force=True, send_telegram=True)
-        # Manual button: always notify current snapshot (even if already seen today)
-        if request.method == "POST" and result.get("setups"):
-            try:
-                from notify.telegram_alerts import send_setups_alert, is_telegram_configured
-                if is_telegram_configured():
-                    send_setups_alert(
-                        result["setups"],
-                        title=f"Ручной скан MOEX ({result.get('at')})",
-                    )
-            except Exception as _e:
-                print("manual TG", _e)
+    # Always force full Telegram snapshot for button/API trigger
+    th = threading.Thread(
+        target=_run_scan_background,
+        kwargs={"force_telegram_all": True},
+        name="manual-scan",
+        daemon=True,
+    )
+    th.start()
 
-        setups = result.get("new_setups") if only_new else result.get("setups") or []
-        if not only_new:
-            setups = result.get("setups") or []
-        # For manual button send all found once more if nothing "new" but user wants to see
-        if not only_new and result.get("setups") and result.get("new") == 0:
-            # still show all; TG already only new inside run_once
-            pass
-
-        _last_count = len(setups)
-        _last_time = result.get("at") or now_msk().strftime("%Y-%m-%d %H:%M:%S")
-        _last_result_html = _setups_table(setups)
-        _last_setups_json = [s.to_dict() for s in setups]
-
-        body = f"""
-        <div class="card">
-          <p class="ok">✓ Скан {_last_time}</p>
-          <p>Всего: <b>{result.get('total', 0)}</b> · Новых (ещё не было сегодня): <b>{result.get('new', 0)}</b></p>
-          <p><a class="btn" href="/">← На главную</a>
-             <a class="btn secondary" href="/charts">Графики</a></p>
-          {_setups_table(result.get('setups') or [])}
-          <details style="margin-top:14px"><summary>Лог</summary>
-          <pre>{html.escape((result.get('log') or '')[:8000])}</pre></details>
-        </div>
-        """
-        return _layout(body, title=f"Скан: {result.get('total', 0)}")
-    except Exception as e:
-        return _layout(
-            f"<div class='card'><p class='warn'>Ошибка: {html.escape(str(e))}</p>"
-            f"<p><a href='/'>← Назад</a></p></div>"
-        ), 500
-    finally:
-        _scanning = False
-        _scan_lock.release()
+    body = """
+    <div class="card">
+      <p class="ok">⏳ Скан запущен в фоне</p>
+      <p>Обычно 1–3 минуты (акции + фьючерсы + H4). Не закрывайте сервис.</p>
+      <p>После завершения сэтапы появятся на главной, полный список уйдёт в Telegram.</p>
+      <p class="muted">Страница обновится через 20 сек…</p>
+      <p><a class="btn" href="/">← На главную</a>
+         <a class="btn secondary" href="/test_telegram">Тест Telegram</a></p>
+      <meta http-equiv="refresh" content="20;url=/" />
+    </div>
+    """
+    return _layout(body, title="Скан запущен")
 
 
 @app.get("/chart/<ticker>")
@@ -451,6 +512,11 @@ def status():
     st["scanning"] = _scanning
     st["service"] = "rayner-moex-scanner"
     st["status"] = "ok"
+    try:
+        from notify.telegram_alerts import telegram_status
+        st["telegram"] = telegram_status()
+    except Exception as e:
+        st["telegram"] = {"error": str(e)}
     return jsonify(st)
 
 
@@ -521,6 +587,14 @@ def api_journal():
 def _bootstrap_monitor():
     cfg = load_config()
     monitor.configure_from_cfg(cfg)
+    try:
+        from notify.telegram_alerts import telegram_status
+        st = telegram_status()
+        print(f"[telegram] при старте: configured={st['configured']} "
+              f"token={st['token_set']} chat_id={st['chat_id_set']} "
+              f"preview={st.get('chat_id_preview')}")
+    except Exception as e:
+        print(f"[telegram] status error: {e}")
     # env overrides
     if os.getenv("MONITOR_ENABLED", "").lower() in ("0", "false", "no"):
         monitor.enabled = False
