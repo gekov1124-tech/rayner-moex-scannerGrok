@@ -154,8 +154,9 @@ def detect_bos(
                     "swing_low": swing_low_price,
                     "bias": bias,
                     "reason": (
-                        f"BOS long: broke swing high {swing_high_price:.2f}, "
-                        f"structure low {swing_low_price:.2f} (bias={bias})"
+                        f"пробой максимума {swing_high_price:.2f}, "
+                        f"структурный минимум {swing_low_price:.2f}, "
+                        f"локальный уклон: {'рост' if bias=='up' else 'снижение' if bias=='down' else 'боковик'}"
                     ),
                 }
 
@@ -176,8 +177,9 @@ def detect_bos(
                     "swing_low": swing_low_price,
                     "bias": bias,
                     "reason": (
-                        f"BOS short: broke swing low {swing_low_price:.2f}, "
-                        f"structure high {swing_high_price:.2f} (bias={bias})"
+                        f"пробой минимума {swing_low_price:.2f}, "
+                        f"структурный максимум {swing_high_price:.2f}, "
+                        f"локальный уклон: {'рост' if bias=='up' else 'снижение' if bias=='down' else 'боковик'}"
                     ),
                 }
 

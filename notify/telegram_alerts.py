@@ -48,11 +48,17 @@ def format_setups_message(setups: List[Setup], title: str = "MOEX Scanner") -> s
         news = ""
         if s.news_summary and s.news_summary not in ("Нет свежих новостей", "No recent news found"):
             news = f"\n   📰 {_escape_md(s.news_summary[:120])}"
+        targets = getattr(s, "scale_plan", "") or ""
+        if not targets and getattr(s, "targets", None):
+            from strategies.base import format_targets_ru
+            targets = format_targets_ru(s.targets, s.exit_rule)
+        tgt_line = f"\n   🎯 {_escape_md(targets[:120])}" if targets else ""
         lines.append(
             f"<b>{i}. {s.ticker}</b> · {s.strategy}\n"
             f"   {direction}  Entry: <code>{s.entry}</code>  Stop: <code>{s.stop}</code>\n"
             f"   Shares: {s.suggested_shares}  Risk: {s.risk_amount:.0f}  Score: {s.score:.1f}\n"
             f"   {_escape_md((s.reason or '')[:90])}"
+            f"{tgt_line}"
             f"{news}"
         )
         lines.append("")

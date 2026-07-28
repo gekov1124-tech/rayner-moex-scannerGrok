@@ -30,6 +30,37 @@ from strategies.base import Setup
 from output.reporter import print_setups, save_csv
 from notify.telegram_alerts import send_setups_alert, is_telegram_configured
 
+def ensure_targets(setups):
+    """Fill multi-stage R targets if strategy did not set them."""
+    from strategies.base import build_r_targets, format_targets_ru
+    for s in setups:
+        if s.targets:
+            if not s.scale_plan:
+                s.scale_plan = format_targets_ru(s.targets, s.exit_rule)
+            continue
+        # Strategy-specific default scale-out
+        name = s.strategy or ""
+        if name in ("RaynerBB_MeanRev", "ConnorsRSI2"):
+            # mean-reversion: take profit faster
+            mults, parts = (1.0, 1.5, 2.0), (0.40, 0.35, 0.25)
+            rest = "по правилу RSI / времени"
+        elif name in ("TrendBreakout_200High", "Donchian20"):
+            mults, parts = (1.5, 2.5, 4.0), (0.25, 0.25, 0.50)
+            rest = "трейлинг по ATR / структуре"
+        elif name == "EMA_Pullback":
+            mults, parts = (1.0, 2.0, 3.0), (0.33, 0.33, 0.34)
+            rest = "трейл под EMA50 / структурой"
+        elif "BOS" in name:
+            mults, parts = (1.0, 2.0, 3.0), (0.30, 0.30, 0.40)
+            rest = "трейл по H4-структуре"
+        else:
+            mults, parts = (1.0, 2.0, 3.0), (0.34, 0.33, 0.33)
+            rest = s.exit_rule or "по правилу стратегии"
+        s.targets = build_r_targets(s.entry, s.stop, s.direction, mults, parts)
+        s.scale_plan = format_targets_ru(s.targets, rest)
+    return setups
+
+
 
 def load_config(path: str = "config.yaml") -> dict:
     cfg_path = ROOT / path
@@ -126,6 +157,7 @@ def run_scan(
 
         print(f"      Сырых сэтапов: {len(all_setups)}")
         all_setups.sort(key=lambda s: s.score, reverse=True)
+        all_setups = ensure_targets(all_setups)
 
         # ML rank / filter (optional)
         ml_cfg = cfg.get("ml") or {}

@@ -33,9 +33,9 @@ class ExampleROC_Momentum(Strategy):
             return [Setup(
                 ticker=ticker, strategy=self.name, direction="long",
                 entry=round(entry, 2), stop=round(stop, 2),
-                exit_rule="Trail ATR or close below SMA200",
+                exit_rule="Трейл по ATR или закрытие ниже SMA200",
                 atr=round(float(last["ATR"]), 2), score=float(last["ROC"]),
-                reason=f"Above SMA200 + ROC({p['roc_period']})={last['ROC']:.1f}% > {p['min_roc']}",
+                reason=f"Цена выше SMA200, ROC({p['roc_period']})={last['ROC']:.1f}% выше {p['min_roc']} — импульс вверх",
                 suggested_shares=shares, risk_amount=round(risk_amount, 2),
                 capital_pct=p["risk_pct"],
             )]

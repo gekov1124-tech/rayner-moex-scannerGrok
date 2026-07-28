@@ -90,12 +90,12 @@ class EMA_Pullback(Strategy):
                     direction="long",
                     entry=round(entry, 2),
                     stop=round(stop, 2),
-                    exit_rule="Close below EMA50 or trail with structure / ATR",
+                    exit_rule="Выход: закрытие ниже EMA50 или трейл по структуре / ATR",
                     atr=round(float(last["ATR"]), 2),
                     score=score,
                     reason=(
-                        f"Uptrend ( >SMA200 ), pullback near EMA20/50 zone, "
-                        f"bullish candle trigger. Dist20={last['Dist20']:.1f}%"
+                        f"Восходящий тренд (цена выше SMA200), откат к зоне EMA20/50, "
+                        f"бычья свеча как триггер входа. Расстояние до EMA20: {last['Dist20']:.1f}%."
                     ),
                     suggested_shares=size,
                     risk_amount=round(risk_amount, 2),

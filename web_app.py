@@ -123,6 +123,10 @@ def _setups_table(setups: list, with_chart_links: bool = True) -> str:
         if with_chart_links:
             chart = f"<a href='/chart/{html.escape(s.ticker)}'>📊 график</a>"
         direction = "🟢 LONG" if s.direction == "long" else "🔴 SHORT"
+        plan = getattr(s, "scale_plan", "") or ""
+        if not plan and getattr(s, "targets", None):
+            from strategies.base import format_targets_ru
+            plan = format_targets_ru(s.targets, s.exit_rule)
         rows.append(
             "<tr>"
             f"<td><b>{html.escape(str(s.ticker))}</b><br/>{chart}</td>"
@@ -132,7 +136,8 @@ def _setups_table(setups: list, with_chart_links: bool = True) -> str:
             f"<td>{s.stop}</td>"
             f"<td>{s.suggested_shares}</td>"
             f"<td>{s.score:.1f}</td>"
-            f"<td style='text-align:left;max-width:320px'>{html.escape((s.reason or '')[:160])}</td>"
+            f"<td style='text-align:left;max-width:280px'>{html.escape((s.reason or '')[:140])}</td>"
+            f"<td style='text-align:left;max-width:260px;font-size:12px'>{html.escape(plan[:160])}</td>"
             "</tr>"
         )
     return (
@@ -275,17 +280,25 @@ def chart(ticker: str):
     # Find setup levels if any
     entry = stop = None
     reason = ""
+    scale_plan = ""
+    target_lines_js = ""
     for s in monitor.last_setups or []:
         if s.ticker == ticker:
             entry, stop = s.entry, s.stop
             reason = s.reason or ""
+            scale_plan = getattr(s, "scale_plan", "") or ""
+            colors = ["#22c55e", "#14b8a6", "#a3e635"]
+            tjs = []
+            for i, tg in enumerate(getattr(s, "targets", None) or []):
+                c = colors[i % len(colors)]
+                lab = tg.get("label", f"TP{i+1}")
+                tjs.append(
+                    f"series.createPriceLine({{ price: {tg['price']}, color: '{c}', "
+                    f"lineWidth: 1, lineStyle: 2, title: '{lab}' }});"
+                )
+            target_lines_js = "\n      ".join(tjs)
             break
 
-    levels_js = ""
-    if entry is not None:
-        levels_js = f"""
-        // note: TradingView widget marks are limited; show levels as text above
-        """
     body = f"""
     <h1>📊 {html.escape(ticker)}</h1>
     <p class="muted">TradingView · символ <code>{html.escape(tv)}</code>
@@ -293,6 +306,7 @@ def chart(ticker: str):
     <div class="card">
       {"<p>Entry: <b>"+str(entry)+"</b> · Stop: <b>"+str(stop)+"</b></p>" if entry is not None else ""}
       {"<p class='muted'>"+html.escape(reason[:200])+"</p>" if reason else ""}
+      {"<p>🎯 <b>Цели:</b> "+html.escape(scale_plan[:220])+"</p>" if scale_plan else ""}
       <div id="tv_chart"></div>
     </div>
     <div class="card">
@@ -340,6 +354,7 @@ def chart(ticker: str):
       series.setData(data.candles);
       {f"series.createPriceLine({{ price: {entry}, color: '#3b82f6', lineWidth: 2, title: 'Entry' }});" if entry is not None else ""}
       {f"series.createPriceLine({{ price: {stop}, color: '#f59e0b', lineWidth: 2, title: 'Stop' }});" if stop is not None else ""}
+      {target_lines_js}
       chart.timeScale().fitContent();
       window.addEventListener('resize', () => chart.applyOptions({{ width: document.getElementById('lw_chart').clientWidth }}));
     }})();

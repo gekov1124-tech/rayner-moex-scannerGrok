@@ -38,6 +38,7 @@ class PaperTrade:
     pnl_pct: float = 0.0
     bars_held: int = 0
     notes: str = ""
+    scale_plan: str = ""
     mtm_price: float = 0.0
     mtm_pnl: float = 0.0
 
@@ -115,6 +116,7 @@ class JournalStore:
             risk_amount=float(setup.risk_amount or 0),
             score=float(setup.score or 0),
             reason=setup.reason or "",
+            scale_plan=getattr(setup, "scale_plan", "") or "",
             mtm_price=float(setup.entry),
         )
         self.trades.append(trade)

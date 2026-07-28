@@ -22,7 +22,7 @@ from typing import List, Optional, Dict
 import pandas as pd
 import numpy as np
 
-from strategies.base import Strategy, Setup
+from strategies.base import Strategy, Setup, build_r_targets, format_targets_ru
 from strategies.registry import register
 from data.structure import (
     detect_bos,
@@ -151,9 +151,13 @@ class RaynerBOS_MTF(Strategy):
                 risk_amount = equity * self.risk_pct
                 shares = int(risk_amount / risk_per_share) if risk_per_share > 0 else 0
 
+                htf_ru = {"up": "восходящий", "down": "нисходящий", "range": "боковой"}.get(htf_bias, htf_bias)
+                tf_ru = {"daily": "дневной", "weekly": "недельный", "H4": "H4", "1H": "H1"}.get(htf_label, htf_label)
+                ltf_ru = {"H4": "H4", "daily": "дневной", "1H": "H1"}.get(ltf_label, ltf_label)
+                zone = "цена у зоны поддержки" if near_val else "далеко от зоны поддержки"
                 reason = (
-                    f"Rayner BOS MTF long | HTF({htf_label})={htf_bias} | "
-                    f"LTF={ltf_label} | {bos['reason']} | near_value={near_val}"
+                    f"Лонг по разрыву структуры (BOS): на старшем ТФ ({tf_ru}) тренд {htf_ru}; "
+                    f"на младшем ТФ ({ltf_ru}) — {bos['reason']}; {zone}."
                 )
 
                 setups.append(
@@ -164,14 +168,18 @@ class RaynerBOS_MTF(Strategy):
                         entry=round(entry, 4),
                         stop=round(stop, 4),
                         exit_rule=(
-                            "Trail under H4 higher lows / structure; "
-                            "or scale out 2–3R"
+                            "Трейл под растущими минимумами H4 / по структуре; или частичная фиксация на 2–3R"
                         ),
                         atr=_atr(df),
                         score=score,
                         reason=reason,
                         suggested_shares=shares,
                         risk_amount=round(risk_amount, 2),
+                        targets=build_r_targets(entry, stop, "long", (1.0, 2.0, 3.0), (0.30, 0.30, 0.40)),
+                        scale_plan=format_targets_ru(
+                            build_r_targets(entry, stop, "long", (1.0, 2.0, 3.0), (0.30, 0.30, 0.40)),
+                            "трейл под растущими минимумами H4",
+                        ),
                     )
                 )
 
@@ -196,9 +204,13 @@ class RaynerBOS_MTF(Strategy):
                 risk_amount = equity * self.risk_pct
                 shares = int(risk_amount / risk_per_share) if risk_per_share > 0 else 0
 
+                htf_ru = {"up": "восходящий", "down": "нисходящий", "range": "боковой"}.get(htf_bias, htf_bias)
+                tf_ru = {"daily": "дневной", "weekly": "недельный", "H4": "H4", "1H": "H1"}.get(htf_label, htf_label)
+                ltf_ru = {"H4": "H4", "daily": "дневной", "1H": "H1"}.get(ltf_label, ltf_label)
+                zone = "цена у зоны сопротивления" if near_res else "далеко от зоны сопротивления"
                 reason = (
-                    f"Rayner BOS MTF short | HTF({htf_label})={htf_bias} | "
-                    f"LTF={ltf_label} | {bos['reason']} | near_value={near_res}"
+                    f"Шорт по разрыву структуры (BOS): на старшем ТФ ({tf_ru}) тренд {htf_ru}; "
+                    f"на младшем ТФ ({ltf_ru}) — {bos['reason']}; {zone}."
                 )
                 setups.append(
                     Setup(
@@ -207,12 +219,17 @@ class RaynerBOS_MTF(Strategy):
                         direction="short",
                         entry=round(entry, 4),
                         stop=round(stop, 4),
-                        exit_rule="Trail above H4 lower highs / structure",
+                        exit_rule="Трейл над снижающимися максимумами H4 / по структуре",
                         atr=_atr(df),
                         score=score,
                         reason=reason,
                         suggested_shares=shares,
                         risk_amount=round(risk_amount, 2),
+                        targets=build_r_targets(entry, stop, "short", (1.0, 2.0, 3.0), (0.30, 0.30, 0.40)),
+                        scale_plan=format_targets_ru(
+                            build_r_targets(entry, stop, "short", (1.0, 2.0, 3.0), (0.30, 0.30, 0.40)),
+                            "трейл над снижающимися максимумами H4",
+                        ),
                     )
                 )
 

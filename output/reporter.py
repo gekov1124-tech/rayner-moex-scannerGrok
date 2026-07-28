@@ -33,6 +33,7 @@ def print_setups(setups: List[Setup], max_rows: int = 25) -> None:
                 "ML": round(getattr(s, "ml_prob", 0) or 0, 2),
                 "News": round(s.news_score, 2),
                 "Reason (short)": (s.reason[:55] + "...") if len(s.reason) > 55 else s.reason,
+                "Цели": (getattr(s, "scale_plan", "") or "")[:50],
             }
         )
 

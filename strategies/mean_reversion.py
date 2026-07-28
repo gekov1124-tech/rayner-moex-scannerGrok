@@ -10,7 +10,7 @@ from typing import List, Dict, Optional
 import pandas as pd
 import numpy as np
 
-from .base import Strategy, Setup
+from .base import Strategy, Setup, build_r_targets, format_targets_ru
 from .registry import register
 from utils.indicators import sma, rsi, bollinger_bands, atr, roc
 
@@ -80,12 +80,12 @@ class RaynerBBMeanRev(Strategy):
                     direction="long",
                     entry=round(entry, 2),
                     stop=round(stop, 2),
-                    exit_rule=f"RSI2 > {p['rsi_exit_level']} OR {p['time_stop']} trading days",
+                    exit_rule=f"Выход: RSI(2) > {p['rsi_exit_level']} или через {p['time_stop']} торговых дней",
                     atr=round(float(last["ATR"]), 2),
                     score=score,
                     reason=(
-                        f"Above SMA200, Close {last['Close']:.2f} < BB_lower {last['BB_lower']:.2f}. "
-                        f"Limit buy ~{p['limit_pct']*100:.0f}% below prev close."
+                        f"Цена выше SMA200 (восходящий тренд), закрытие {last['Close']:.2f} ниже нижней полосы Боллинджера "
+                        f"({last['BB_lower']:.2f}). Лимитная покупка примерно на {p['limit_pct']*100:.0f}% ниже предыдущего закрытия."
                     ),
                     suggested_shares=size,
                     risk_amount=round(equity * p["capital_pct"], 2),
@@ -150,10 +150,10 @@ class ConnorsRSI2(Strategy):
                     direction="long",
                     entry=round(entry, 2),
                     stop=round(stop, 2),
-                    exit_rule=f"RSI2 > {p['rsi_exit']} OR Close > SMA5",
+                    exit_rule=f"Выход: RSI(2) > {p['rsi_exit']} или закрытие выше SMA(5)",
                     atr=round(float(last["ATR"]), 2),
                     score=score,
-                    reason=f"RSI(2)={last['RSI2']:.1f} < {p['rsi_entry']}, above SMA200 (Connors + Rayner trend filter)",
+                    reason=f"RSI(2)={last['RSI2']:.1f} ниже {p['rsi_entry']} (сильная перепроданность), цена выше SMA200 — тренд вверх (Connors + фильтр Rayner)",
                     suggested_shares=size,
                     risk_amount=round(equity * p["capital_pct"], 2),
                     capital_pct=p["capital_pct"],
