@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from monitor.session import is_session_open, now_msk, session_status
+from journal.store import JournalStore
+from journal.tracker import update_open_trades
 
 ROOT = Path(__file__).resolve().parent.parent
 SEEN_FILE = ROOT / "cache" / "seen_signals.json"
@@ -148,6 +150,46 @@ class MarketMonitor:
                     print(f"[monitor] Telegram: {len(new_setups)} new setups")
             except Exception as e:
                 print(f"[monitor] Telegram error: {e}")
+
+        # Paper journal: open virtual trades + update MTM / exits
+        try:
+            from main import load_config
+            from data.moex_fetcher import fetch_ohlcv
+            from data.universe import classify_instrument
+            jcfg = (load_config().get("journal") or {})
+            if jcfg.get("enabled", True):
+                store = JournalStore()
+                day = now_msk().strftime("%Y-%m-%d")
+                opened = 0
+                for s in setups:
+                    if store.add_from_setup(s, day):
+                        opened += 1
+                # refresh prices for open tickers
+                open_tickers = list({t.ticker for t in store.open_trades()})
+                if open_tickers:
+                    fut = {x for x in open_tickers if classify_instrument(x) == "futures"}
+                    pdata = fetch_ohlcv(
+                        open_tickers, source="moex", lookback_days=120,
+                        use_cache=True, futures_tickers=fut,
+                    )
+                    closed = update_open_trades(store, pdata)
+                    if closed and send_telegram:
+                        try:
+                            from notify.telegram_alerts import send_telegram_message, is_telegram_configured
+                            if is_telegram_configured():
+                                lines = [f"<b>📒 Закрыты виртуальные сделки: {len(closed)}</b>"]
+                                for ct in closed[:10]:
+                                    sign = "+" if ct.pnl >= 0 else ""
+                                    lines.append(
+                                        f"{ct.ticker} {ct.strategy}: {sign}{ct.pnl:.0f} "
+                                        f"({ct.pnl_pct*100:.1f}%) · {ct.exit_reason}"
+                                    )
+                                send_telegram_message("\n".join(lines))
+                        except Exception as e:
+                            print("[journal] TG close alert", e)
+                    print(f"[journal] opened={opened} open_now={len(store.open_trades())} closed_now={len(closed)}")
+        except Exception as e:
+            print(f"[journal] error: {e}")
 
         return {
             "skipped": False,

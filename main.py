@@ -127,6 +127,20 @@ def run_scan(
         print(f"      Сырых сэтапов: {len(all_setups)}")
         all_setups.sort(key=lambda s: s.score, reverse=True)
 
+        # ML rank / filter (optional)
+        ml_cfg = cfg.get("ml") or {}
+        if ml_cfg.get("enabled") and all_setups:
+            try:
+                from ml.ranker import get_ranker_from_config
+                ranker = get_ranker_from_config(cfg)
+                before = len(all_setups)
+                all_setups = ranker.apply(all_setups, data)
+                mode = ml_cfg.get("mode", "rank")
+                print(f"      ML ({mode}): {before} → {len(all_setups)}"
+                      + (f" model={'yes' if ranker.available else 'no'}" ))
+            except Exception as e:
+                print(f"      ML skip: {e}")
+
         if news_enabled and all_setups:
             print("[4/4] Новостной фильтр...")
 

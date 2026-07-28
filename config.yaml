@@ -48,3 +48,14 @@ monitor:
   session_end: "18:50"
   universe: mixed
   no_news: true
+
+journal:
+  enabled: true
+  auto_open: true
+  telegram_on_close: true
+
+ml:
+  enabled: false
+  mode: rank
+  min_probability: 0.55
+  model_path: ml/artifacts/model.json

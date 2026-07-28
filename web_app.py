@@ -185,6 +185,7 @@ def index():
         </button>
         <a class="btn secondary" href="/status">Статус JSON</a>
         <a class="btn secondary" href="/charts">Все графики</a>
+        <a class="btn secondary" href="/journal">📒 Журнал</a>
       </form>
       <p class="muted">В торговые часы монитор сам сканирует и шлёт <b>только новые</b> сэтапы в Telegram.</p>
     </div>
@@ -436,6 +437,70 @@ def status():
     st["service"] = "rayner-moex-scanner"
     st["status"] = "ok"
     return jsonify(st)
+
+
+
+@app.get("/journal")
+def journal_page():
+    from journal.store import JournalStore
+    from journal.analyze import analyze_journal, format_report_text
+    store = JournalStore()
+    report = analyze_journal(store)
+    open_rows = ""
+    for tr in store.open_trades():
+        open_rows += (
+            f"<tr><td>{html.escape(tr.ticker)}</td><td>{html.escape(tr.strategy)}</td>"
+            f"<td>{tr.entry_price}</td><td>{tr.stop}</td>"
+            f"<td>{tr.mtm_pnl:.0f}</td>"
+            f"<td><a href='/chart/{html.escape(tr.ticker)}'>📊</a></td></tr>"
+        )
+    closed_rows = ""
+    for tr in reversed(store.closed_trades()[-30:]):
+        closed_rows += (
+            f"<tr><td>{html.escape(tr.ticker)}</td><td>{html.escape(tr.strategy)}</td>"
+            f"<td>{tr.pnl:.0f}</td><td>{tr.pnl_pct*100:.1f}%</td>"
+            f"<td>{html.escape(tr.exit_reason)}</td><td>{tr.bars_held}</td></tr>"
+        )
+    lessons = "".join(f"<li>{html.escape(x)}</li>" for x in report.get("lessons") or [])
+    s = report.get("summary") or {}
+    body = f"""
+    <h1>📒 Журнал виртуальных сделок</h1>
+    <p class="muted"><a href="/">← на главную</a> · <a href="/api/journal">JSON</a></p>
+    <div class="card">
+      <p>Открытых: <b>{report.get('open_count',0)}</b> ·
+         Закрытых: <b>{report.get('closed_count',0)}</b> ·
+         MTM открытых: <b>{report.get('open_mtm_pnl',0)}</b></p>
+      <p class="muted">Win={s.get('win_rate','—')}% · Total PnL={s.get('total_pnl','—')} ·
+         PF={s.get('profit_factor','—')}</p>
+    </div>
+    <div class="card">
+      <h2>Уроки для обучения</h2>
+      <ul>{lessons or '<li>Пока мало данных</li>'}</ul>
+    </div>
+    <div class="card">
+      <h2>Открытые</h2>
+      <table><thead><tr><th>Тикер</th><th>Стратегия</th><th>Entry</th><th>Stop</th><th>MTM</th><th></th></tr></thead>
+      <tbody>{open_rows or '<tr><td colspan=6>Нет открытых</td></tr>'}</tbody></table>
+    </div>
+    <div class="card">
+      <h2>Последние закрытые</h2>
+      <table><thead><tr><th>Тикер</th><th>Стратегия</th><th>PnL</th><th>%</th><th>Выход</th><th>Дни</th></tr></thead>
+      <tbody>{closed_rows or '<tr><td colspan=6>Нет закрытых</td></tr>'}</tbody></table>
+    </div>
+    """
+    return _layout(body, title="Журнал")
+
+
+@app.get("/api/journal")
+def api_journal():
+    from journal.store import JournalStore
+    from journal.analyze import analyze_journal
+    store = JournalStore()
+    return jsonify({
+        "open": [t.to_dict() for t in store.open_trades()],
+        "closed": [t.to_dict() for t in store.closed_trades()[-100:]],
+        "analysis": analyze_journal(store),
+    })
 
 
 def _bootstrap_monitor():

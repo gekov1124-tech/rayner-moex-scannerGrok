@@ -27,6 +27,8 @@ class Setup:
     news_score: float = 0.0
     news_summary: str = ""
     capital_pct: float = 0.0
+    ml_score: float = 0.0  # model ranking score
+    ml_prob: float = 0.0   # P(profitable) if model trained
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

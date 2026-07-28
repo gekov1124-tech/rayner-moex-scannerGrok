@@ -30,6 +30,7 @@ def print_setups(setups: List[Setup], max_rows: int = 25) -> None:
                 "Shares": s.suggested_shares,
                 "Risk $": round(s.risk_amount, 0),
                 "Score": round(s.score, 1),
+                "ML": round(getattr(s, "ml_prob", 0) or 0, 2),
                 "News": round(s.news_score, 2),
                 "Reason (short)": (s.reason[:55] + "...") if len(s.reason) > 55 else s.reason,
             }
