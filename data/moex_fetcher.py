@@ -1,11 +1,10 @@
 """
 Data fetcher for Moscow Exchange (MOEX).
-Primary: official MOEX ISS API (free, no key).
-Optional: Finam export (finam-export) if installed.
+Shares (TQBR) + Futures (FORTS) via official ISS API.
 """
 
 from __future__ import annotations
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from pathlib import Path
 from datetime import datetime, timedelta
 import pickle
@@ -23,17 +22,27 @@ def _candles_from_iss(
     ticker: str,
     from_date: str,
     till_date: str,
-    interval: int = 24,  # 24 = daily
+    interval: int = 24,
     board: str = "TQBR",
+    engine: str = "stock",
+    market: str = "shares",
 ) -> pd.DataFrame:
     """
-    Fetch daily OHLCV from MOEX ISS.
+    Fetch OHLCV from MOEX ISS.
     interval: 1=1m, 10=10m, 60=1h, 24=1d, 7=1w, 31=1M
+    engine/market: stock/shares or futures/forts
     """
-    url = (
-        f"{MOEX_ISS_BASE}/engines/stock/markets/shares/boards/{board}/"
-        f"securities/{ticker}/candles.json"
-    )
+    if engine == "futures":
+        # FORTS path does not use board in the same way
+        url = (
+            f"{MOEX_ISS_BASE}/engines/futures/markets/forts/"
+            f"securities/{ticker}/candles.json"
+        )
+    else:
+        url = (
+            f"{MOEX_ISS_BASE}/engines/stock/markets/shares/boards/{board}/"
+            f"securities/{ticker}/candles.json"
+        )
     params = {
         "from": from_date,
         "till": till_date,
@@ -61,16 +70,15 @@ def _candles_from_iss(
         for row in data:
             all_rows.append(dict(zip(cols, row)))
 
-        if len(data) < 500:  # typical page size
+        if len(data) < 500:
             break
         start += len(data)
-        time.sleep(0.15)  # be polite
+        time.sleep(0.12)
 
     if not all_rows:
         return pd.DataFrame()
 
     df = pd.DataFrame(all_rows)
-    # Standardize columns
     rename = {
         "open": "Open",
         "high": "High",
@@ -92,14 +100,26 @@ def _candles_from_iss(
     return df[needed].astype(float).dropna(how="all")
 
 
+def _is_futures_ticker(ticker: str, futures_set: Optional[Set[str]] = None) -> bool:
+    if futures_set and ticker in futures_set:
+        return True
+    try:
+        from data.universe import classify_instrument
+        return classify_instrument(ticker) == "futures"
+    except Exception:
+        import re
+        return bool(re.match(r"^[A-Za-z]{1,5}[FGHJKMNQUVXZ]\d{1,2}$", ticker or ""))
+
+
 def fetch_moex_ohlcv(
     tickers: List[str],
     lookback_days: int = 500,
     use_cache: bool = True,
     board: str = "TQBR",
+    futures_tickers: Optional[Set[str]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """
-    Download daily OHLCV for MOEX tickers via ISS.
+    Download daily OHLCV for MOEX shares and/or futures.
     """
     till = datetime.now().strftime("%Y-%m-%d")
     frm = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
@@ -107,32 +127,46 @@ def fetch_moex_ohlcv(
     cache_key = f"moex_ohlcv_{lookback_days}_{datetime.now().strftime('%Y%m%d')}.pkl"
     cache_file = CACHE_DIR / cache_key
 
+    cached: Dict[str, pd.DataFrame] = {}
     if use_cache and cache_file.exists():
         try:
             with open(cache_file, "rb") as f:
                 cached = pickle.load(f)
-            return {t: cached[t] for t in tickers if t in cached}
         except Exception:
-            pass
+            cached = {}
 
     data: Dict[str, pd.DataFrame] = {}
     for i, t in enumerate(tickers):
-        df = _candles_from_iss(t, frm, till, interval=24, board=board)
-        if not df.empty and len(df) > 150:
+        if use_cache and t in cached and cached[t] is not None and len(cached[t]) > 50:
+            data[t] = cached[t]
+            continue
+
+        is_fut = _is_futures_ticker(t, futures_tickers)
+        if is_fut:
+            df = _candles_from_iss(
+                t, frm, till, interval=24, engine="futures", market="forts"
+            )
+            min_bars = 80  # front month may have shorter history
+        else:
+            df = _candles_from_iss(t, frm, till, interval=24, board=board)
+            min_bars = 150
+
+        if not df.empty and len(df) >= min_bars:
             data[t] = df
+        elif not df.empty and is_fut and len(df) >= 40:
+            # accept shorter futures history with warning
+            print(f"  [moex] {t}: only {len(df)} bars (short front-month history)")
+            data[t] = df
+
         if (i + 1) % 10 == 0:
             print(f"  [moex] loaded {i+1}/{len(tickers)}")
         time.sleep(0.12)
 
     if use_cache and data:
         try:
-            existing = {}
-            if cache_file.exists():
-                with open(cache_file, "rb") as f:
-                    existing = pickle.load(f)
-            existing.update(data)
+            cached.update(data)
             with open(cache_file, "wb") as f:
-                pickle.dump(existing, f)
+                pickle.dump(cached, f)
         except Exception:
             pass
 
@@ -143,10 +177,7 @@ def fetch_finam_ohlcv(
     tickers: List[str],
     lookback_days: int = 500,
 ) -> Dict[str, pd.DataFrame]:
-    """
-    Optional Finam export (requires finam-export package).
-    Falls back gracefully if not installed or fails.
-    """
+    """Optional Finam export for shares only."""
     try:
         from finam import Exporter, Market
     except ImportError:
@@ -159,12 +190,12 @@ def fetch_finam_ohlcv(
     start = end - timedelta(days=lookback_days)
 
     for t in tickers:
+        if _is_futures_ticker(t):
+            continue
         try:
-            # Lookup MOEX shares
             res = exporter.lookup(code=t, market=Market.SHARES)
             if res is None or len(res) == 0:
                 continue
-            # Take first match
             idx = res.index[0]
             df = exporter.download(
                 idx,
@@ -174,7 +205,6 @@ def fetch_finam_ohlcv(
                 timeframe=Exporter.Timeframe.DAILY,
             )
             if df is not None and not df.empty:
-                # Normalize columns from finam format
                 colmap = {
                     "<OPEN>": "Open",
                     "<HIGH>": "High",
@@ -202,30 +232,61 @@ def fetch_ohlcv(
     source: str = "moex",
     lookback_days: int = 500,
     use_cache: bool = True,
+    futures_tickers: Optional[Set[str]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """
-    Unified entry point.
-    source: "moex" (default, free ISS) or "finam"
+    Unified entry point for shares + futures.
     """
     source = (source or "moex").lower()
+    fut_set = futures_tickers or {t for t in tickers if _is_futures_ticker(t)}
     if source == "finam":
-        data = fetch_finam_ohlcv(tickers, lookback_days)
+        # Finam for shares, MOEX for futures
+        shares = [t for t in tickers if t not in fut_set]
+        data = fetch_finam_ohlcv(shares, lookback_days) if shares else {}
+        if fut_set:
+            fut_data = fetch_moex_ohlcv(
+                list(fut_set),
+                lookback_days=lookback_days,
+                use_cache=use_cache,
+                futures_tickers=fut_set,
+            )
+            data.update(fut_data)
         if data:
+            # fill missing shares from MOEX
+            missing = [t for t in shares if t not in data]
+            if missing:
+                data.update(
+                    fetch_moex_ohlcv(
+                        missing, lookback_days=lookback_days, use_cache=use_cache
+                    )
+                )
             return data
         print("[fetcher] Finam failed/empty → fallback to MOEX ISS")
-    return fetch_moex_ohlcv(tickers, lookback_days=lookback_days, use_cache=use_cache)
+    return fetch_moex_ohlcv(
+        tickers,
+        lookback_days=lookback_days,
+        use_cache=use_cache,
+        futures_tickers=fut_set,
+    )
+
 
 def fetch_weekly(
     tickers: list,
     years: float = 5.0,
     board: str = "TQBR",
 ) -> Dict[str, pd.DataFrame]:
-    """Fetch weekly candles (interval=7) for higher-timeframe analysis."""
+    """Fetch weekly candles for higher-timeframe analysis."""
     till = datetime.now().strftime("%Y-%m-%d")
     frm = (datetime.now() - timedelta(days=int(years * 365))).strftime("%Y-%m-%d")
     out: Dict[str, pd.DataFrame] = {}
     for i, t in enumerate(tickers, 1):
-        df = _candles_from_iss(t, frm, till, interval=7, board=board)
+        is_fut = _is_futures_ticker(t)
+        if is_fut:
+            df = _candles_from_iss(
+                t, frm, till, interval=7, engine="futures", market="forts"
+            )
+        else:
+            df = _candles_from_iss(t, frm, till, interval=7, board=board)
         if df is not None and len(df) >= 30:
             out[t] = df
         if i % 10 == 0:
@@ -234,9 +295,8 @@ def fetch_weekly(
     return out
 
 
-
 def _resample_h4(hourly: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate 1H bars into 4-hour bars (MOEX session-aware enough for structure)."""
+    """Aggregate 1H bars into 4-hour bars."""
     if hourly is None or hourly.empty:
         return pd.DataFrame()
     d = hourly.copy()
@@ -258,10 +318,10 @@ def fetch_h4(
     lookback_days: int = 90,
     use_cache: bool = True,
     board: str = "TQBR",
+    futures_tickers: Optional[Set[str]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """
-    Fetch H4 candles for Rayner-style lower timeframe (Break of Structure).
-    MOEX ISS has no native 4H → download 1H (interval=60) and resample to 4H.
+    H4 candles for shares and futures (1H → resample 4H).
     """
     till = datetime.now().strftime("%Y-%m-%d")
     frm = (datetime.now() - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
@@ -269,19 +329,30 @@ def fetch_h4(
     cache_key = f"moex_h4_{lookback_days}_{datetime.now().strftime('%Y%m%d')}.pkl"
     cache_file = CACHE_DIR / cache_key
 
+    cached: Dict[str, pd.DataFrame] = {}
     if use_cache and cache_file.exists():
         try:
             with open(cache_file, "rb") as f:
                 cached = pickle.load(f)
-            hit = {t: cached[t] for t in tickers if t in cached}
-            if len(hit) == len(tickers):
-                return hit
         except Exception:
-            pass
+            cached = {}
 
     out: Dict[str, pd.DataFrame] = {}
+    fut_set = futures_tickers or {t for t in tickers if _is_futures_ticker(t)}
+
     for i, t in enumerate(tickers, 1):
-        hourly = _candles_from_iss(t, frm, till, interval=60, board=board)
+        if use_cache and t in cached and cached[t] is not None and len(cached[t]) >= 20:
+            out[t] = cached[t]
+            continue
+
+        is_fut = t in fut_set or _is_futures_ticker(t)
+        if is_fut:
+            hourly = _candles_from_iss(
+                t, frm, till, interval=60, engine="futures", market="forts"
+            )
+        else:
+            hourly = _candles_from_iss(t, frm, till, interval=60, board=board)
+
         if hourly is not None and not hourly.empty and len(hourly) >= 40:
             h4 = _resample_h4(hourly)
             if len(h4) >= 20:
@@ -294,13 +365,9 @@ def fetch_h4(
 
     if use_cache and out:
         try:
-            existing = {}
-            if cache_file.exists():
-                with open(cache_file, "rb") as f:
-                    existing = pickle.load(f)
-            existing.update(out)
+            cached.update(out)
             with open(cache_file, "wb") as f:
-                pickle.dump(existing, f)
+                pickle.dump(cached, f)
         except Exception:
             pass
 

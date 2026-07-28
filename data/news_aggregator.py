@@ -201,6 +201,27 @@ def get_vedomosti_rss() -> List[Dict]:
 
 # Mapping ticker -> common Russian company name for better search
 TICKER_NAMES = {
+    # Futures roots / contracts
+    "Si": "доллар OR USD OR курс доллара",
+    "SiU6": "доллар OR USD OR курс доллара",
+    "SiZ6": "доллар OR USD OR курс доллара",
+    "RI": "РТС OR индекс RTS",
+    "RIU6": "РТС OR индекс RTS",
+    "MX": "индекс Мосбиржи OR IMOEX",
+    "MXU6": "индекс Мосбиржи OR IMOEX",
+    "BR": "нефть OR Brent OR баррель",
+    "BRQ6": "нефть OR Brent",
+    "GOLD": "золото OR gold",
+    "GDU6": "золото OR gold",
+    "NG": "газ OR natural gas",
+    "Eu": "евро OR EUR",
+    "ED": "евро доллар OR EURUSD",
+    "SBRF": "Сбербанк",
+    "SRU6": "Сбербанк",
+    "GAZR": "Газпром",
+    "GZU6": "Газпром",
+    "LKOH": "Лукойл",
+
     "SBER": "Сбербанк",
     "SBERP": "Сбербанк",
     "GAZP": "Газпром",

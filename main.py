@@ -77,8 +77,14 @@ def run_scan(
             print("Нет стратегий. Проверьте config или --list-strategies")
             return [], buf.getvalue()
 
+        from data.universe import classify_instrument
         tickers = get_universe(universe)
-        print(f"\n[1/4] Universe: {universe} → {len(tickers)} тикеров MOEX")
+        fut_tickers = {t for t in tickers if classify_instrument(t) == "futures"}
+        share_n = len(tickers) - len(fut_tickers)
+        print(f"\n[1/4] Universe: {universe} → {len(tickers)} инструментов "
+              f"(акции: {share_n}, фьючерсы: {len(fut_tickers)})")
+        if fut_tickers:
+            print(f"      FORTS: {', '.join(sorted(fut_tickers))}")
         print(f"[2/4] Данные: {source.upper()}...")
 
         data = fetch_ohlcv(
@@ -86,15 +92,16 @@ def run_scan(
             source=source,
             lookback_days=cfg.get("lookback_days", 500),
             use_cache=True,
+            futures_tickers=fut_tickers,
         )
-        print(f"      Получено данных: {len(data)} тикеров")
+        print(f"      Получено данных: {len(data)} инструментов")
 
         h4_data = {}
         need_h4 = any(getattr(s, "name", "") == "Rayner_BOS_MTF" for s in strat_objs)
         if need_h4:
             print("      Загрузка H4 (1H→4H) для Break of Structure...")
             try:
-                h4_data = fetch_h4(list(data.keys()), lookback_days=90, use_cache=True)
+                h4_data = fetch_h4(list(data.keys()), lookback_days=90, use_cache=True, futures_tickers=fut_tickers)
                 print(f"      H4 получено: {len(h4_data)} тикеров")
             except Exception as e:
                 print(f"      H4 недоступны ({e}) — fallback Daily BOS")

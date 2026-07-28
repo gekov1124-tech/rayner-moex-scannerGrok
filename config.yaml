@@ -1,4 +1,4 @@
-universe: sample
+universe: mixed  # sample | blue | futures | mixed
 data_source: moex
 lookback_days: 500
 equity: 1000000
@@ -39,3 +39,12 @@ strategy_params:
     limit_pct: 0.03
   ConnorsRSI2:
     rsi_entry: 10
+
+
+monitor:
+  enabled: true
+  interval_minutes: 30
+  session_start: "10:00"
+  session_end: "18:50"
+  universe: mixed
+  no_news: true
