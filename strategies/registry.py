@@ -42,6 +42,7 @@ def load_builtin_strategies():
     import strategies.trend_following  # noqa
     import strategies.pullback  # noqa
     import strategies.bos_mtf  # noqa
+    import strategies.false_break  # noqa
 
 
 def load_plugins(plugins_dir: Optional[str] = None):

@@ -12,6 +12,7 @@ strategies:
 - Donchian20
 - EMA_Pullback
 - Rayner_BOS_MTF
+- Rayner_FalseBreak
 plugins_dir: plugins
 news:
   enabled: true
@@ -59,3 +60,13 @@ ml:
   mode: rank
   min_probability: 0.55
   model_path: ml/artifacts/model.json
+
+
+# Rayner alignment filters
+rayner_filters:
+  require_aov_for_pa: true
+  min_rr: 1.5
+  market_filter: true          # IMOEX above SMA200 for stock longs
+  market_ticker: IMOEX
+  market_sma: 200
+  tf_trail_only: true          # trend strategies: no aggressive 1R scale-out

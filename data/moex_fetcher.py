@@ -15,6 +15,8 @@ import pandas as pd
 CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
+INDEX_TICKERS = {"IMOEX", "RTSI", "MOEXBC", "MOEX10"}
+
 MOEX_ISS_BASE = "https://iss.moex.com/iss"
 
 
@@ -36,6 +38,12 @@ def _candles_from_iss(
         # FORTS path does not use board in the same way
         url = (
             f"{MOEX_ISS_BASE}/engines/futures/markets/forts/"
+            f"securities/{ticker}/candles.json"
+        )
+    elif engine == "index" or market == "index":
+        # Index path (IMOEX, RTSI, etc.)
+        url = (
+            f"{MOEX_ISS_BASE}/engines/stock/markets/index/"
             f"securities/{ticker}/candles.json"
         )
     else:
@@ -142,11 +150,17 @@ def fetch_moex_ohlcv(
             continue
 
         is_fut = _is_futures_ticker(t, futures_tickers)
+        is_idx = t.upper() in INDEX_TICKERS
         if is_fut:
             df = _candles_from_iss(
                 t, frm, till, interval=24, engine="futures", market="forts"
             )
             min_bars = 80  # front month may have shorter history
+        elif is_idx:
+            df = _candles_from_iss(
+                t, frm, till, interval=24, engine="index", market="index"
+            )
+            min_bars = 150
         else:
             df = _candles_from_iss(t, frm, till, interval=24, board=board)
             min_bars = 150

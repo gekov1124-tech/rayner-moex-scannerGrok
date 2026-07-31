@@ -119,17 +119,19 @@ class RaynerBOS_MTF(Strategy):
         near_val = is_near_area_of_value(
             df, kind="support", tolerance_pct=self.near_support_tol
         )
+        # Rayner: hard Area of Value — do not trade far from value
+        require_aov = self.params.get("require_aov", True)
 
-        htf_ok = (
-            (not self.require_htf_up)
-            or htf_bias in ("up", "range", "unknown")
-            or (htf_bias == "down" and near_val)
-        )
+        # Rayner: long only with HTF up/range (not against downtrend)
+        if self.require_htf_up:
+            htf_ok_long = htf_bias in ("up", "range", "unknown")
+        else:
+            htf_ok_long = True
 
         setups: List[Setup] = []
 
         # ----- LONG -----
-        if htf_ok:
+        if htf_ok_long and (near_val or not require_aov):
             bos = detect_bos(ltf_df, direction="long", left=2, right=2, lookback=50)
             if bos and bos.get("bos"):
                 score = 12.0 if use_h4 else 10.0
@@ -188,6 +190,8 @@ class RaynerBOS_MTF(Strategy):
             near_res = is_near_area_of_value(
                 df, kind="resistance", tolerance_pct=self.near_support_tol
             )
+            if self.params.get("require_aov", True) and not near_res:
+                return setups
             bos = detect_bos(ltf_df, direction="short", left=2, right=2, lookback=50)
             if bos and bos.get("bos"):
                 score = 10.0 if use_h4 else 8.0

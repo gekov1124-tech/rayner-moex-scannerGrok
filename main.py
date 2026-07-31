@@ -48,6 +48,64 @@ def ensure_aov(setups, data):
         s.aov_levels = aov.get("levels") or []
     return setups
 
+
+def apply_rayner_filters(setups, data, cfg):
+    """
+    Post-filters aligned with Rayner Teo:
+      - min R:R to first target
+      - market regime (IMOEX > SMA) for stock longs
+    """
+    from data.universe import classify_instrument
+    from utils.indicators import sma
+
+    rf = (cfg or {}).get("rayner_filters") or {}
+    min_rr = float(rf.get("min_rr", 1.5) or 0)
+    use_mkt = bool(rf.get("market_filter", True))
+    mkt_ticker = rf.get("market_ticker", "IMOEX")
+    mkt_sma_n = int(rf.get("market_sma", 200))
+
+    market_ok = True
+    if use_mkt and data:
+        mdf = data.get(mkt_ticker)
+        if mdf is not None and len(mdf) >= mkt_sma_n:
+            try:
+                s = sma(mdf["Close"], mkt_sma_n)
+                last = float(mdf["Close"].iloc[-1])
+                last_s = float(s.iloc[-1])
+                market_ok = last >= last_s
+                print(f"[rayner] market filter {mkt_ticker}: close={last:.2f} SMA{mkt_sma_n}={last_s:.2f} ok={market_ok}")
+            except Exception as e:
+                print(f"[rayner] market filter skip: {e}")
+                market_ok = True
+        else:
+            # try fetch later — if missing, do not block
+            market_ok = True
+            print(f"[rayner] market filter: no {mkt_ticker} data — skip")
+
+    out = []
+    for s in setups:
+        # min R:R
+        risk = s.risk_per_share()
+        if min_rr > 0 and risk > 0 and s.targets:
+            first = s.targets[0]
+            reward = abs(float(first["price"]) - float(s.entry))
+            rr = reward / risk if risk else 0
+            if rr < min_rr * 0.95:  # small tolerance
+                continue
+        elif min_rr > 0 and risk > 0:
+            # no targets: estimate 2R
+            pass
+
+        # market regime: block stock longs when index weak
+        if use_mkt and not market_ok and s.direction == "long":
+            if classify_instrument(s.ticker) == "stock":
+                continue
+
+        out.append(s)
+    print(f"[rayner] filters: {len(setups)} → {len(out)} (min_rr={min_rr}, market_ok={market_ok})")
+    return out
+
+
 def ensure_targets(setups):
     """Fill multi-stage R targets if strategy did not set them."""
     from strategies.base import build_r_targets, format_targets_ru
@@ -63,8 +121,9 @@ def ensure_targets(setups):
             mults, parts = (1.0, 1.5, 2.0), (0.40, 0.35, 0.25)
             rest = "по правилу RSI / времени"
         elif name in ("TrendBreakout_200High", "Donchian20"):
-            mults, parts = (1.5, 2.5, 4.0), (0.25, 0.25, 0.50)
-            rest = "трейлинг по ATR / структуре"
+            # Rayner trend following: hold with trail, minimal early scale-out
+            mults, parts = (2.0, 4.0), (0.25, 0.75)
+            rest = "трейлинг по ATR / структуре (без ранней нарезки 1R)"
         elif name == "EMA_Pullback":
             mults, parts = (1.0, 2.0, 3.0), (0.33, 0.33, 0.34)
             rest = "трейл под EMA50 / структурой"
@@ -128,6 +187,13 @@ def run_scan(
 
         from data.universe import classify_instrument
         tickers = get_universe(universe)
+        # Rayner market regime filter needs index series
+        rf = cfg.get("rayner_filters") or {}
+        if rf.get("market_filter", True):
+            mkt = rf.get("market_ticker", "IMOEX")
+            if mkt and mkt not in tickers:
+                tickers = list(tickers) + [mkt]
+                print(f"      + market filter ticker: {mkt}")
         fut_tickers = {t for t in tickers if classify_instrument(t) == "futures"}
         share_n = len(tickers) - len(fut_tickers)
         print(f"\n[1/4] Universe: {universe} → {len(tickers)} инструментов "
@@ -177,6 +243,10 @@ def run_scan(
         all_setups.sort(key=lambda s: s.score, reverse=True)
         all_setups = ensure_targets(all_setups)
         all_setups = ensure_aov(all_setups, data)
+        all_setups = apply_rayner_filters(all_setups, data, cfg)
+        # never trade the index proxy itself
+        _mkt = (cfg.get("rayner_filters") or {}).get("market_ticker", "IMOEX")
+        all_setups = [s for s in all_setups if s.ticker != _mkt]
 
         # ML rank / filter (optional)
         ml_cfg = cfg.get("ml") or {}
