@@ -7,7 +7,7 @@ Market Structure helpers inspired by Rayner Teo.
 """
 
 from __future__ import annotations
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 import numpy as np
 import pandas as pd
 
@@ -240,3 +240,118 @@ def weekly_trend_filter(weekly_df: pd.DataFrame) -> str:
     if last < last_sma and bias != "up":
         return "down"
     return "range"
+
+
+def compute_area_of_value(
+    df: pd.DataFrame,
+    lookback: int = 80,
+    tolerance_pct: float = 0.015,
+) -> Dict[str, Any]:
+    """
+    Rayner-style Area of Value for charting.
+    Returns support/resistance swing levels, MA zone, and a primary band.
+    """
+    from utils.indicators import sma, ema
+
+    empty = {
+        "support_levels": [],
+        "resistance_levels": [],
+        "ema20": None,
+        "ema50": None,
+        "sma200": None,
+        "zone_low": None,
+        "zone_high": None,
+        "zone_label": "",
+        "levels": [],  # for chart lines: {price, title, color, style}
+    }
+    if df is None or len(df) < 30:
+        return empty
+
+    recent = df.iloc[-lookback:] if len(df) >= lookback else df
+    price = float(df["Close"].iloc[-1])
+    swings = get_recent_swings(recent, left=3, right=3, max_points=6)
+
+    supports = sorted({round(float(p), 4) for _, p in swings.get("lows", [])}, reverse=True)
+    resistances = sorted({round(float(p), 4) for _, p in swings.get("highs", [])})
+
+    # Keep levels near price (±12%)
+    def near(levels, pct=0.12):
+        out = []
+        for lv in levels:
+            if price > 0 and abs(lv - price) / price <= pct:
+                out.append(lv)
+        return out[:4]
+
+    supports = near(supports)
+    resistances = near(resistances)
+
+    e20 = e50 = s200 = None
+    try:
+        e20 = float(ema(df["Close"], 20).iloc[-1])
+        e50 = float(ema(df["Close"], 50).iloc[-1])
+        if len(df) >= 200:
+            s200 = float(sma(df["Close"], 200).iloc[-1])
+        elif len(df) >= 50:
+            s200 = float(sma(df["Close"], min(200, len(df) - 1)).iloc[-1])
+    except Exception:
+        pass
+
+    # Primary zone: nearest support cluster or EMA band
+    zone_low = zone_high = None
+    zone_label = ""
+    if supports:
+        # band around nearest support below or near price
+        below = [s for s in supports if s <= price * 1.01]
+        ref = below[0] if below else supports[0]
+        zone_low = round(ref * (1 - tolerance_pct), 4)
+        zone_high = round(ref * (1 + tolerance_pct), 4)
+        zone_label = f"Поддержка (свинг) ≈ {ref}"
+    elif e20 is not None and e50 is not None:
+        zone_low = round(min(e20, e50), 4)
+        zone_high = round(max(e20, e50), 4)
+        zone_label = "Зона EMA20–EMA50"
+    elif e50 is not None:
+        zone_low = round(e50 * (1 - tolerance_pct), 4)
+        zone_high = round(e50 * (1 + tolerance_pct), 4)
+        zone_label = f"EMA50 ≈ {round(e50, 4)}"
+
+    # If price is closer to resistance, prefer resistance zone (for shorts / context)
+    if resistances:
+        above = [r for r in resistances if r >= price * 0.99]
+        if above:
+            ref_r = above[0]
+            # only override if clearly nearer to resistance than support
+            dist_r = abs(ref_r - price)
+            dist_s = abs((supports[0] if supports else ref_r) - price) if supports else dist_r * 2
+            if dist_r < dist_s * 0.85:
+                zone_low = round(ref_r * (1 - tolerance_pct), 4)
+                zone_high = round(ref_r * (1 + tolerance_pct), 4)
+                zone_label = f"Сопротивление (свинг) ≈ {ref_r}"
+
+    levels = []
+    if zone_low is not None and zone_high is not None:
+        levels.append({"price": zone_low, "title": "AoV↓", "color": "#22c55e", "style": 2})
+        levels.append({"price": zone_high, "title": "AoV↑", "color": "#22c55e", "style": 2})
+    for s in supports[:3]:
+        levels.append({"price": s, "title": "Support", "color": "#4ade80", "style": 0})
+    for r in resistances[:3]:
+        levels.append({"price": r, "title": "Resist", "color": "#f87171", "style": 0})
+    if e20 is not None:
+        levels.append({"price": round(e20, 4), "title": "EMA20", "color": "#60a5fa", "style": 1})
+    if e50 is not None:
+        levels.append({"price": round(e50, 4), "title": "EMA50", "color": "#a78bfa", "style": 1})
+    if s200 is not None:
+        levels.append({"price": round(s200, 4), "title": "SMA200", "color": "#fbbf24", "style": 0})
+
+    return {
+        "support_levels": supports,
+        "resistance_levels": resistances,
+        "ema20": round(e20, 4) if e20 is not None else None,
+        "ema50": round(e50, 4) if e50 is not None else None,
+        "sma200": round(s200, 4) if s200 is not None else None,
+        "zone_low": zone_low,
+        "zone_high": zone_high,
+        "zone_label": zone_label,
+        "levels": levels,
+        "last_price": round(price, 4),
+    }

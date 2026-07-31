@@ -136,8 +136,9 @@ def _setups_table(setups: list, with_chart_links: bool = True) -> str:
             f"<td>{s.stop}</td>"
             f"<td>{s.suggested_shares}</td>"
             f"<td>{s.score:.1f}</td>"
-            f"<td style='text-align:left;max-width:280px'>{html.escape((s.reason or '')[:140])}</td>"
-            f"<td style='text-align:left;max-width:260px;font-size:12px'>{html.escape(plan[:160])}</td>"
+            f"<td style='text-align:left;max-width:260px'>{html.escape((s.reason or '')[:120])}"
+            f"<div style='color:#86efac;font-size:11px;margin-top:4px'>{html.escape((getattr(s,'value_zone_label','') or '')[:80])}</div></td>"
+            f"<td style='text-align:left;max-width:240px;font-size:12px'>{html.escape(plan[:150])}</td>"
             "</tr>"
         )
     return (
@@ -334,6 +335,38 @@ def scan():
     return _layout(body, title="Скан запущен")
 
 
+
+@app.get("/api/aov/<ticker>")
+def api_aov(ticker: str):
+    """Area of Value levels for chart overlays."""
+    from data.moex_fetcher import fetch_ohlcv
+    from data.universe import classify_instrument
+    from data.structure import compute_area_of_value
+    ticker = ticker.strip()
+    fut = {ticker} if classify_instrument(ticker) == "futures" else set()
+    try:
+        data = fetch_ohlcv(
+            [ticker], source="moex", lookback_days=250, use_cache=True, futures_tickers=fut
+        )
+        df = data.get(ticker)
+        aov = compute_area_of_value(df) if df is not None else {}
+        # merge setup targets if any
+        for s in monitor.last_setups or []:
+            if s.ticker == ticker:
+                aov["entry"] = s.entry
+                aov["stop"] = s.stop
+                aov["targets"] = getattr(s, "targets", []) or []
+                aov["scale_plan"] = getattr(s, "scale_plan", "") or ""
+                aov["reason"] = s.reason or ""
+                aov["value_zone_label"] = getattr(s, "value_zone_label", "") or aov.get("zone_label")
+                if getattr(s, "aov_levels", None):
+                    aov["levels"] = s.aov_levels
+                break
+        return jsonify(aov)
+    except Exception as e:
+        return jsonify({"error": str(e), "levels": []}), 500
+
+
 @app.get("/chart/<ticker>")
 def chart(ticker: str):
     ticker = ticker.strip()
@@ -342,12 +375,21 @@ def chart(ticker: str):
     entry = stop = None
     reason = ""
     scale_plan = ""
+    aov_label = ""
+    zone_low = zone_high = None
     target_lines_js = ""
     for s in monitor.last_setups or []:
         if s.ticker == ticker:
             entry, stop = s.entry, s.stop
             reason = s.reason or ""
             scale_plan = getattr(s, "scale_plan", "") or ""
+            aov_label = getattr(s, "value_zone_label", "") or ""
+            zone_low = getattr(s, "value_zone_low", None) or None
+            zone_high = getattr(s, "value_zone_high", None) or None
+            if zone_low == 0:
+                zone_low = None
+            if zone_high == 0:
+                zone_high = None
             colors = ["#22c55e", "#14b8a6", "#a3e635"]
             tjs = []
             for i, tg in enumerate(getattr(s, "targets", None) or []):
@@ -360,6 +402,14 @@ def chart(ticker: str):
             target_lines_js = "\n      ".join(tjs)
             break
 
+    zone_html = ""
+    if aov_label or (zone_low and zone_high):
+        zone_html = (
+            f"<p>🟩 <b>Зона ценности:</b> {html.escape(aov_label or '')}"
+            + (f" · {zone_low} – {zone_high}" if zone_low and zone_high else "")
+            + "</p>"
+        )
+
     body = f"""
     <h1>📊 {html.escape(ticker)}</h1>
     <p class="muted">TradingView · символ <code>{html.escape(tv)}</code>
@@ -367,13 +417,15 @@ def chart(ticker: str):
     <div class="card">
       {"<p>Entry: <b>"+str(entry)+"</b> · Stop: <b>"+str(stop)+"</b></p>" if entry is not None else ""}
       {"<p class='muted'>"+html.escape(reason[:200])+"</p>" if reason else ""}
+      {zone_html}
       {"<p>🎯 <b>Цели:</b> "+html.escape(scale_plan[:220])+"</p>" if scale_plan else ""}
       <div id="tv_chart"></div>
     </div>
     <div class="card">
-      <h2>Наши свечи (MOEX ISS)</h2>
-      <div id="lw_chart" style="height:420px;width:100%"></div>
-      <p class="muted">Данные с Московской биржи (daily). Entry/Stop — линии сэтапа.</p>
+      <h2>Наши свечи (MOEX ISS) + зона ценности</h2>
+      <div id="lw_chart" style="height:480px;width:100%"></div>
+      <p class="muted">Зелёная полоса — Area of Value (Rayner). Линии: EMA20/50, SMA200, Support/Resist, Entry/Stop/TP.</p>
+      <p class="muted" id="aov_legend"></p>
     </div>
     <script src="https://s3.tradingview.com/tv.js"></script>
     <script>
@@ -402,22 +454,60 @@ def chart(ticker: str):
         document.getElementById('lw_chart').innerHTML = '<p class="muted">Нет данных ISS для тикера</p>';
         return;
       }}
-      const chart = LightweightCharts.createChart(document.getElementById('lw_chart'), {{
+      let aov = {{}};
+      try {{
+        const ar = await fetch('/api/aov/{html.escape(ticker)}');
+        aov = await ar.json();
+      }} catch (e) {{}}
+      const el = document.getElementById('lw_chart');
+      const chart = LightweightCharts.createChart(el, {{
         layout: {{ background: {{ color: '#111827' }}, textColor: '#e7ecf3' }},
         grid: {{ vertLines: {{ color: '#1f2937' }}, horzLines: {{ color: '#1f2937' }} }},
-        width: document.getElementById('lw_chart').clientWidth,
-        height: 420,
+        width: el.clientWidth,
+        height: 480,
       }});
       const series = chart.addCandlestickSeries({{
         upColor: '#22c55e', downColor: '#ef4444', borderVisible: false,
         wickUpColor: '#22c55e', wickDownColor: '#ef4444'
       }});
       series.setData(data.candles);
+
+      // Area of Value band (two boundary lines)
+      const zLo = aov.zone_low, zHi = aov.zone_high;
+      if (zLo && zHi) {{
+        series.createPriceLine({{ price: zLo, color: '#22c55e', lineWidth: 2, lineStyle: 0, title: 'AoV низ' }});
+        series.createPriceLine({{ price: zHi, color: '#22c55e', lineWidth: 2, lineStyle: 0, title: 'AoV верх' }});
+        // midpoint marker
+        series.createPriceLine({{
+          price: (zLo + zHi) / 2, color: 'rgba(34,197,94,0.35)', lineWidth: 8, lineStyle: 0, title: 'Зона ценности'
+        }});
+      }}
+      // Other AoV levels (EMA, SMA, swings)
+      const styleMap = {{0: 0, 1: 1, 2: 2}};
+      (aov.levels || []).forEach(lv => {{
+        if (zLo && zHi && (lv.title === 'AoV↓' || lv.title === 'AoV↑')) return;
+        series.createPriceLine({{
+          price: lv.price,
+          color: lv.color || '#94a3b8',
+          lineWidth: 1,
+          lineStyle: styleMap[lv.style] !== undefined ? styleMap[lv.style] : 1,
+          title: lv.title || ''
+        }});
+      }});
+
       {f"series.createPriceLine({{ price: {entry}, color: '#3b82f6', lineWidth: 2, title: 'Entry' }});" if entry is not None else ""}
       {f"series.createPriceLine({{ price: {stop}, color: '#f59e0b', lineWidth: 2, title: 'Stop' }});" if stop is not None else ""}
       {target_lines_js}
+
+      const leg = document.getElementById('aov_legend');
+      if (leg) {{
+        leg.textContent = (aov.zone_label || aov.value_zone_label || '')
+          + (aov.ema20 ? ` · EMA20=${{aov.ema20}}` : '')
+          + (aov.ema50 ? ` · EMA50=${{aov.ema50}}` : '')
+          + (aov.sma200 ? ` · SMA200=${{aov.sma200}}` : '');
+      }}
       chart.timeScale().fitContent();
-      window.addEventListener('resize', () => chart.applyOptions({{ width: document.getElementById('lw_chart').clientWidth }}));
+      window.addEventListener('resize', () => chart.applyOptions({{ width: el.clientWidth }}));
     }})();
     </script>
     """

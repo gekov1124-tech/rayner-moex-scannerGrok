@@ -30,6 +30,24 @@ from strategies.base import Setup
 from output.reporter import print_setups, save_csv
 from notify.telegram_alerts import send_setups_alert, is_telegram_configured
 
+
+def ensure_aov(setups, data):
+    """Attach Rayner Area of Value levels from OHLCV to each setup."""
+    from data.structure import compute_area_of_value
+    for s in setups:
+        df = (data or {}).get(s.ticker)
+        if df is None or getattr(df, "empty", True):
+            continue
+        try:
+            aov = compute_area_of_value(df)
+        except Exception:
+            continue
+        s.value_zone_low = float(aov.get("zone_low") or 0)
+        s.value_zone_high = float(aov.get("zone_high") or 0)
+        s.value_zone_label = aov.get("zone_label") or ""
+        s.aov_levels = aov.get("levels") or []
+    return setups
+
 def ensure_targets(setups):
     """Fill multi-stage R targets if strategy did not set them."""
     from strategies.base import build_r_targets, format_targets_ru
@@ -158,6 +176,7 @@ def run_scan(
         print(f"      Сырых сэтапов: {len(all_setups)}")
         all_setups.sort(key=lambda s: s.score, reverse=True)
         all_setups = ensure_targets(all_setups)
+        all_setups = ensure_aov(all_setups, data)
 
         # ML rank / filter (optional)
         ml_cfg = cfg.get("ml") or {}

@@ -73,6 +73,11 @@ class Setup:
     targets: List[Dict[str, Any]] = field(default_factory=list)
     # Human-readable scale-out plan in Russian
     scale_plan: str = ""
+    # Area of Value (Rayner MAEE)
+    value_zone_low: float = 0.0
+    value_zone_high: float = 0.0
+    value_zone_label: str = ""
+    aov_levels: List[Dict[str, Any]] = field(default_factory=list)
 
     def risk_per_share(self) -> float:
         if self.direction == "long":
