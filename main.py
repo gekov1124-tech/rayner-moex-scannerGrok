@@ -32,7 +32,9 @@ from notify.telegram_alerts import send_setups_alert, is_telegram_configured
 
 
 def ensure_aov(setups, data):
-    """Attach Rayner Area of Value levels from OHLCV to each setup."""
+    """Attach Rayner Area of Value levels from OHLCV to each setup.
+    Keeps a single primary zone; prefers zone nearest to entry.
+    """
     from data.structure import compute_area_of_value
     for s in setups:
         df = (data or {}).get(s.ticker)
@@ -42,24 +44,59 @@ def ensure_aov(setups, data):
             aov = compute_area_of_value(df)
         except Exception:
             continue
-        s.value_zone_low = float(aov.get("zone_low") or 0)
-        s.value_zone_high = float(aov.get("zone_high") or 0)
-        s.value_zone_label = aov.get("zone_label") or ""
-        s.aov_levels = aov.get("levels") or []
+        zlo = float(aov.get("zone_low") or 0)
+        zhi = float(aov.get("zone_high") or 0)
+        label = aov.get("zone_label") or ""
+        levels = list(aov.get("levels") or [])
+        # If entry is far from computed AoV, try nearest support from details
+        entry = float(getattr(s, "entry", 0) or 0)
+        if entry > 0 and zlo and zhi:
+            mid = (zlo + zhi) / 2
+            if abs(entry - mid) / entry > 0.04:
+                details = aov.get("level_details") or {}
+                cands = []
+                for item in (details.get("supports") or []) + (details.get("resistances") or []):
+                    px = float(item.get("price") or 0)
+                    if px > 0:
+                        cands.append((abs(entry - px), px, item))
+                if cands:
+                    cands.sort(key=lambda x: x[0])
+                    _, px, item = cands[0]
+                    tol = 0.015
+                    zlo = round(px * (1 - tol), 4)
+                    zhi = round(px * (1 + tol), 4)
+                    tag = "flip" if item.get("flipped") else ("круг" if item.get("round") else "свинг")
+                    label = f"{'Поддержка' if px <= entry else 'Сопротивление'} ({tag}) ≈ {px} · касаний {item.get('touches', 1)}"
+                    # rebuild minimal levels with this AoV
+                    levels = [lv for lv in levels if lv.get("title") not in ("AoV низ", "AoV верх", "Зона ценности", "AoV↓", "AoV↑")]
+                    levels = [
+                        {"price": zlo, "title": "AoV низ", "color": "#22c55e", "style": 0, "key": True},
+                        {"price": zhi, "title": "AoV верх", "color": "#22c55e", "style": 0, "key": True},
+                        {"price": round((zlo + zhi) / 2, 4), "title": "Зона ценности", "color": "rgba(34,197,94,0.4)", "style": 0, "key": True},
+                    ] + levels
+        s.value_zone_low = zlo
+        s.value_zone_high = zhi
+        s.value_zone_label = label
+        s.aov_levels = levels
     return setups
 
 
 def apply_rayner_filters(setups, data, cfg):
     """
     Post-filters aligned with Rayner Teo:
-      - min R:R to first target
+      - strict with-trend (price > SMA200)
       - market regime (IMOEX > SMA) for stock longs
+      - max stop distance %
+      - min R:R to first target (and vs nearest resistance for longs)
     """
     from data.universe import classify_instrument
     from utils.indicators import sma
 
     rf = (cfg or {}).get("rayner_filters") or {}
+    strict = bool(rf.get("strict", True))
     min_rr = float(rf.get("min_rr", 1.5) or 0)
+    max_stop_pct = float(rf.get("max_stop_pct", 0.07) or 0)
+    require_sma = bool(rf.get("require_price_above_sma200", strict))
     use_mkt = bool(rf.get("market_filter", True))
     mkt_ticker = rf.get("market_ticker", "IMOEX")
     mkt_sma_n = int(rf.get("market_sma", 200))
@@ -69,40 +106,111 @@ def apply_rayner_filters(setups, data, cfg):
         mdf = data.get(mkt_ticker)
         if mdf is not None and len(mdf) >= mkt_sma_n:
             try:
-                s = sma(mdf["Close"], mkt_sma_n)
+                sm = sma(mdf["Close"], mkt_sma_n)
                 last = float(mdf["Close"].iloc[-1])
-                last_s = float(s.iloc[-1])
+                last_s = float(sm.iloc[-1])
                 market_ok = last >= last_s
                 print(f"[rayner] market filter {mkt_ticker}: close={last:.2f} SMA{mkt_sma_n}={last_s:.2f} ok={market_ok}")
             except Exception as e:
                 print(f"[rayner] market filter skip: {e}")
                 market_ok = True
         else:
-            # try fetch later — if missing, do not block
             market_ok = True
             print(f"[rayner] market filter: no {mkt_ticker} data — skip")
 
+    # precompute SMA200 per ticker
+    sma200_map = {}
+    if data:
+        for tkr, df in data.items():
+            if df is None or len(df) < 50:
+                continue
+            try:
+                n = min(200, len(df) - 1)
+                sm = sma(df["Close"], n)
+                sma200_map[tkr] = float(sm.iloc[-1])
+            except Exception:
+                pass
+
     out = []
+    stats = {"stop_pct": 0, "rr": 0, "sma200": 0, "market": 0, "resist_rr": 0}
     for s in setups:
-        # min R:R
+        entry = float(s.entry)
+        stop = float(s.stop)
         risk = s.risk_per_share()
+
+        # max stop distance
+        if max_stop_pct > 0 and entry > 0:
+            stop_pct = abs(entry - stop) / entry
+            if stop_pct > max_stop_pct:
+                stats["stop_pct"] += 1
+                continue
+
+        # min R:R to first target
         if min_rr > 0 and risk > 0 and s.targets:
             first = s.targets[0]
-            reward = abs(float(first["price"]) - float(s.entry))
+            reward = abs(float(first["price"]) - entry)
             rr = reward / risk if risk else 0
-            if rr < min_rr * 0.95:  # small tolerance
+            if rr < min_rr * 0.95:
+                stats["rr"] += 1
                 continue
-        elif min_rr > 0 and risk > 0:
-            # no targets: estimate 2R
-            pass
 
-        # market regime: block stock longs when index weak
-        if use_mkt and not market_ok and s.direction == "long":
-            if classify_instrument(s.ticker) == "stock":
+        # R:R vs nearest resistance above entry (longs) — real obstacle
+        if s.direction == "long" and risk > 0 and min_rr > 0:
+            res_levels = getattr(s, "aov_levels", None) or []
+            above = []
+            for lv in res_levels:
+                title = str(lv.get("title", ""))
+                px = float(lv.get("price") or 0)
+                if px > entry * 1.002 and ("Resist" in title or "resist" in title):
+                    above.append(px)
+            # also support_levels style fields
+            for px in (getattr(s, "value_zone_high", 0) or 0,):
+                if px > entry * 1.01:
+                    above.append(float(px))
+            if above:
+                nearest = min(above)
+                reward_to_res = nearest - entry
+                if reward_to_res / risk < min_rr * 0.9:
+                    stats["resist_rr"] += 1
+                    continue
+
+        # price above SMA200 for longs (strict Rayner trend filter)
+        if s.direction == "long" and require_sma:
+            s200 = sma200_map.get(s.ticker)
+            if s200 is not None and entry < s200:
+                stats["sma200"] += 1
                 continue
+
+        # market regime
+        if use_mkt and not market_ok and s.direction == "long":
+            inst = classify_instrument(s.ticker)
+            if inst in ("stock", "share", "shares"):
+                stats["market"] += 1
+                continue
+
+        # annotate trend for UI
+        s200 = sma200_map.get(s.ticker)
+        if s200 is not None:
+            if entry >= s200:
+                trend_tag = "↑ выше SMA200"
+            else:
+                trend_tag = "↓ ниже SMA200"
+            if s.reason and "SMA200" not in s.reason:
+                s.reason = f"{s.reason} [{trend_tag}]"
+            # store on setup if field exists via setattr
+            try:
+                s.trend_flag = trend_tag
+            except Exception:
+                pass
 
         out.append(s)
-    print(f"[rayner] filters: {len(setups)} → {len(out)} (min_rr={min_rr}, market_ok={market_ok})")
+
+    print(
+        f"[rayner] filters: {len(setups)} → {len(out)} "
+        f"(strict={strict}, market_ok={market_ok}, "
+        f"drop stop={stats['stop_pct']} rr={stats['rr']} "
+        f"sma200={stats['sma200']} mkt={stats['market']} resist_rr={stats['resist_rr']})"
+    )
     return out
 
 

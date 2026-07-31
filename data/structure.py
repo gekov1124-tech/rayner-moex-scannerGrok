@@ -464,22 +464,34 @@ def compute_area_of_value(
     except Exception:
         pass
 
-    # Primary AoV: strongest support below/near price (or resistance for shorts context)
+
+    # Primary AoV: ONE zone nearest to price (Rayner: trade the area in play)
     zone_low = zone_high = None
     zone_label = ""
     best_sup = None
     for s in supports:
-        if s["price"] <= price * 1.015:
+        if s["price"] <= price * 1.02:
             best_sup = s
             break
     best_res = None
     for r in resistances:
-        if r["price"] >= price * 0.985:
+        if r["price"] >= price * 0.98:
             best_res = r
             break
 
-    if best_sup and (not best_res or best_sup.get("strength", 1) >= best_res.get("strength", 1) * 0.7
-                     or abs(best_sup["price"] - price) <= abs((best_res or best_sup)["price"] - price)):
+    use_sup = False
+    if best_sup and best_res:
+        dist_s = abs(price - best_sup["price"])
+        dist_r = abs(price - best_res["price"])
+        # prefer the closer side; ties → support in uptrend-ish (price > ema50)
+        if dist_s <= dist_r * 1.05:
+            use_sup = True
+        elif e50 is not None and price >= e50:
+            use_sup = True
+    elif best_sup:
+        use_sup = True
+
+    if use_sup and best_sup:
         ref = best_sup["price"]
         zone_low = round(ref * (1 - tolerance_pct), 4)
         zone_high = round(ref * (1 + tolerance_pct), 4)
@@ -504,54 +516,53 @@ def compute_area_of_value(
         zone_high = round(e50 * (1 + tolerance_pct), 4)
         zone_label = f"EMA50 ≈ {round(e50, 4)}"
 
-    # ---- Clean chart levels: top-2 S, top-2 R, AoV, SMA200, EMA50 ----
+    # ---- Clean chart: ONE AoV band + top-1 S + top-1 R + SMA200 + EMA50 ----
     levels = []
     if zone_low is not None and zone_high is not None:
-        levels.append({"price": zone_low, "title": "AoV↓", "color": "#22c55e", "style": 0, "key": True})
-        levels.append({"price": zone_high, "title": "AoV↑", "color": "#22c55e", "style": 0, "key": True})
+        levels.append({"price": zone_low, "title": "AoV низ", "color": "#22c55e", "style": 0, "key": True})
+        levels.append({"price": zone_high, "title": "AoV верх", "color": "#22c55e", "style": 0, "key": True})
         levels.append({
             "price": round((zone_low + zone_high) / 2, 4),
             "title": "Зона ценности",
-            "color": "rgba(34,197,94,0.35)",
+            "color": "rgba(34,197,94,0.4)",
             "style": 0,
             "key": True,
         })
 
+    # top-1 support not overlapping AoV
     for s in supports[:2]:
+        if zone_low and abs(s["price"] - (zone_low + zone_high) / 2) / max(s["price"], 1e-9) < 0.012:
+            continue  # same as AoV
         title = "Support★" if s.get("strength", 1) >= 3 else "Support"
         if s.get("flipped"):
             title = "Support(flip)"
         if s.get("round"):
             title = "Support(круг)"
         levels.append({
-            "price": s["price"],
-            "title": title,
-            "color": "#4ade80",
-            "style": 0,
-            "key": True,
-            "strength": s.get("strength", 1),
+            "price": s["price"], "title": title, "color": "#4ade80",
+            "style": 0, "key": True, "strength": s.get("strength", 1),
         })
+        break  # only top-1 extra support
+
     for r in resistances[:2]:
+        if zone_high and abs(r["price"] - (zone_low + zone_high) / 2) / max(r["price"], 1e-9) < 0.012:
+            continue
         title = "Resist★" if r.get("strength", 1) >= 3 else "Resist"
         if r.get("flipped"):
             title = "Resist(flip)"
         if r.get("round"):
             title = "Resist(круг)"
         levels.append({
-            "price": r["price"],
-            "title": title,
-            "color": "#f87171",
-            "style": 0,
-            "key": True,
-            "strength": r.get("strength", 1),
+            "price": r["price"], "title": title, "color": "#f87171",
+            "style": 0, "key": True, "strength": r.get("strength", 1),
         })
+        break  # only top-1 extra resist
 
     if s200 is not None:
         levels.append({"price": round(s200, 4), "title": "SMA200", "color": "#fbbf24", "style": 0, "key": True})
     if e50 is not None:
         levels.append({"price": round(e50, 4), "title": "EMA50", "color": "#a78bfa", "style": 1, "key": True})
-    # EMA20 only in legend, not as extra line (less noise)
-    # keep in data for legend
+
 
     return {
         "support_levels": [s["price"] for s in supports[:3]],

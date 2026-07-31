@@ -64,9 +64,13 @@ ml:
 
 # Rayner alignment filters
 rayner_filters:
+  strict: true                 # only with-trend setups (Rayner-style)
   require_aov_for_pa: true
+  require_price_above_sma200: true   # long only if price > SMA200
   min_rr: 1.5
+  max_stop_pct: 0.07           # skip if stop farther than 7% from entry
   market_filter: true          # IMOEX above SMA200 for stock longs
   market_ticker: IMOEX
   market_sma: 200
   tf_trail_only: true          # trend strategies: no aggressive 1R scale-out
+  single_aov: true             # one primary Area of Value on chart

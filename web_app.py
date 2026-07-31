@@ -129,7 +129,8 @@ def _setups_table(setups: list, with_chart_links: bool = True) -> str:
             plan = format_targets_ru(s.targets, s.exit_rule)
         rows.append(
             "<tr>"
-            f"<td><b>{html.escape(str(s.ticker))}</b><br/>{chart}</td>"
+            f"<td><b>{html.escape(str(s.ticker))}</b><br/>{chart}"
+            f"<div style='font-size:11px;margin-top:3px;color:#93c5fd'>{html.escape(getattr(s, 'trend_flag', '') or '')}</div></td>"
             f"<td>{html.escape(str(s.strategy))}</td>"
             f"<td>{direction}</td>"
             f"<td>{s.entry}</td>"
@@ -472,28 +473,27 @@ def chart(ticker: str):
       }});
       series.setData(data.candles);
 
-      // Area of Value band (two boundary lines)
-      const zLo = aov.zone_low, zHi = aov.zone_high;
-      if (zLo && zHi) {{
-        series.createPriceLine({{ price: zLo, color: '#22c55e', lineWidth: 2, lineStyle: 0, title: 'AoV низ' }});
-        series.createPriceLine({{ price: zHi, color: '#22c55e', lineWidth: 2, lineStyle: 0, title: 'AoV верх' }});
-        // midpoint marker
-        series.createPriceLine({{
-          price: (zLo + zHi) / 2, color: 'rgba(34,197,94,0.35)', lineWidth: 8, lineStyle: 0, title: 'Зона ценности'
-        }});
-      }}
-      // Other AoV levels (EMA, SMA, swings)
+      // Levels from API (already includes single AoV + top S/R + MA)
       const styleMap = {{0: 0, 1: 1, 2: 2}};
+      const seen = new Set();
       (aov.levels || []).forEach(lv => {{
-        if (zLo && zHi && (lv.title === 'AoV↓' || lv.title === 'AoV↑')) return;
+        const key = (lv.title || '') + ':' + Number(lv.price).toFixed(4);
+        if (seen.has(key)) return;
+        seen.add(key);
+        const isAov = (lv.title || '').indexOf('AoV') >= 0 || (lv.title || '') === 'Зона ценности';
         series.createPriceLine({{
           price: lv.price,
           color: lv.color || '#94a3b8',
-          lineWidth: 1,
+          lineWidth: isAov ? 2 : 1,
           lineStyle: styleMap[lv.style] !== undefined ? styleMap[lv.style] : 1,
           title: lv.title || ''
         }});
       }});
+      // fallback if levels empty but zone present
+      if ((!aov.levels || !aov.levels.length) && aov.zone_low && aov.zone_high) {{
+        series.createPriceLine({{ price: aov.zone_low, color: '#22c55e', lineWidth: 2, title: 'AoV низ' }});
+        series.createPriceLine({{ price: aov.zone_high, color: '#22c55e', lineWidth: 2, title: 'AoV верх' }});
+      }}
 
       {f"series.createPriceLine({{ price: {entry}, color: '#3b82f6', lineWidth: 2, title: 'Entry' }});" if entry is not None else ""}
       {f"series.createPriceLine({{ price: {stop}, color: '#f59e0b', lineWidth: 2, title: 'Stop' }});" if stop is not None else ""}
