@@ -424,7 +424,7 @@ def chart(ticker: str):
     <div class="card">
       <h2>Наши свечи (MOEX ISS) + зона ценности</h2>
       <div id="lw_chart" style="height:480px;width:100%"></div>
-      <p class="muted">Зелёная полоса — Area of Value (Rayner). Линии: EMA20/50, SMA200, Support/Resist, Entry/Stop/TP.</p>
+      <p class="muted">Зона ценности (AoV) + топ-2 Support/Resist по силе касаний, S/R flip, круглые числа, SMA200/EMA50, Entry/Stop/TP.</p>
       <p class="muted" id="aov_legend"></p>
     </div>
     <script src="https://s3.tradingview.com/tv.js"></script>

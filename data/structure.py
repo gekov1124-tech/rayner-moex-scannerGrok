@@ -189,33 +189,45 @@ def detect_bos(
 def is_near_area_of_value(
     df: pd.DataFrame,
     kind: str = "support",
-    lookback: int = 60,
+    lookback: int = 80,
     tolerance_pct: float = 0.03,
 ) -> bool:
     """
-    Rough check: is current price near a recent swing low (support)
-    or swing high (resistance)?
+    Near Area of Value using quality-ranked levels (touches, flip, rounds).
+    Falls back to raw swings if compute fails.
     """
-    if len(df) < 20:
+    if df is None or len(df) < 20:
         return False
+    price = float(df["Close"].iloc[-1])
+    try:
+        aov = compute_area_of_value(df, lookback=lookback, tolerance_pct=min(tolerance_pct, 0.02))
+        if kind == "support":
+            levels = list(aov.get("support_levels") or [])
+            if aov.get("zone_low") and aov.get("zone_high"):
+                # zone itself counts as support-ish if price inside/near
+                if aov["zone_low"] <= price <= aov["zone_high"] * 1.01:
+                    return True
+                levels.append(aov["zone_low"])
+                levels.append(aov["zone_high"])
+        else:
+            levels = list(aov.get("resistance_levels") or [])
+            if aov.get("zone_low") and aov.get("zone_high"):
+                if aov["zone_low"] * 0.99 <= price <= aov["zone_high"]:
+                    return True
+                levels.append(aov["zone_low"])
+                levels.append(aov["zone_high"])
+        if levels:
+            return any(abs(price - float(lvl)) / max(float(lvl), 1e-9) <= tolerance_pct for lvl in levels)
+    except Exception:
+        pass
+    # fallback raw swings
     recent = df.iloc[-lookback:]
     swings = get_recent_swings(recent, left=3, right=3, max_points=5)
-    price = float(df["Close"].iloc[-1])
-
     if kind == "support":
-        levels = [p for _, p in swings["lows"]]
-        if not levels:
-            # fallback: recent lowest low
-            levels = [float(recent["Low"].min())]
-        return any(abs(price - lvl) / lvl <= tolerance_pct for lvl in levels)
-
-    if kind == "resistance":
-        levels = [p for _, p in swings["highs"]]
-        if not levels:
-            levels = [float(recent["High"].max())]
-        return any(abs(price - lvl) / lvl <= tolerance_pct for lvl in levels)
-
-    return False
+        levels = [p for _, p in swings["lows"]] or [float(recent["Low"].min())]
+    else:
+        levels = [p for _, p in swings["highs"]] or [float(recent["High"].max())]
+    return any(abs(price - lvl) / max(lvl, 1e-9) <= tolerance_pct for lvl in levels)
 
 
 def weekly_trend_filter(weekly_df: pd.DataFrame) -> str:
@@ -242,14 +254,134 @@ def weekly_trend_filter(weekly_df: pd.DataFrame) -> str:
     return "range"
 
 
+
+def _cluster_levels(prices: list, tol_pct: float = 0.012) -> list:
+    """Merge nearby prices into clusters; return [{price, touches, strength}]."""
+    if not prices:
+        return []
+    prices = sorted(float(p) for p in prices)
+    clusters = []
+    cur = [prices[0]]
+    for p in prices[1:]:
+        ref = sum(cur) / len(cur)
+        if abs(p - ref) / max(ref, 1e-9) <= tol_pct:
+            cur.append(p)
+        else:
+            clusters.append(cur)
+            cur = [p]
+    clusters.append(cur)
+    out = []
+    for c in clusters:
+        mid = sum(c) / len(c)
+        touches = len(c)
+        out.append({"price": round(mid, 4), "touches": touches, "strength": touches})
+    return out
+
+
+def _count_touches(df: pd.DataFrame, level: float, tol_pct: float = 0.01) -> int:
+    """How many bars wicked/closed near the level."""
+    if df is None or len(df) < 5 or level <= 0:
+        return 0
+    hi = df["High"].astype(float)
+    lo = df["Low"].astype(float)
+    band = level * tol_pct
+    near = ((hi >= level - band) & (lo <= level + band))
+    return int(near.sum())
+
+
+def _round_numbers_near(price: float, n: int = 4) -> list:
+    """Psychological round levels near current price."""
+    if price <= 0:
+        return []
+    # step scales with price magnitude
+    if price >= 5000:
+        step = 500
+    elif price >= 1000:
+        step = 100
+    elif price >= 200:
+        step = 50
+    elif price >= 50:
+        step = 10
+    elif price >= 10:
+        step = 5
+    else:
+        step = 1
+    base = round(price / step) * step
+    cands = []
+    for k in range(-3, 4):
+        lv = base + k * step
+        if lv > 0 and abs(lv - price) / price <= 0.12:
+            cands.append(round(float(lv), 4))
+    # also half-steps for major
+    half = step / 2
+    if half >= 1:
+        base_h = round(price / half) * half
+        for k in range(-2, 3):
+            lv = base_h + k * half
+            if lv > 0 and abs(lv - price) / price <= 0.10:
+                cands.append(round(float(lv), 4))
+    return sorted(set(cands))
+
+
+def _apply_sr_flip(
+    supports: list,
+    resistances: list,
+    price: float,
+) -> tuple:
+    """
+    Role reversal: broken resistance becomes support, broken support becomes resistance.
+    supports/resistances are lists of dicts with price/touches/strength.
+    """
+    flipped_sup = []
+    flipped_res = []
+    # Resistance clearly broken (price well above) → support
+    for r in resistances:
+        if price > r["price"] * 1.008:
+            flipped_sup.append({
+                **r,
+                "price": r["price"],
+                "strength": r.get("strength", 1) + 1,  # flip bonus
+                "flipped": True,
+                "role": "support",
+            })
+        else:
+            flipped_res.append({**r, "role": "resistance", "flipped": False})
+    # Support clearly broken (price well below) → resistance
+    for s in supports:
+        if price < s["price"] * 0.992:
+            flipped_res.append({
+                **s,
+                "price": s["price"],
+                "strength": s.get("strength", 1) + 1,
+                "flipped": True,
+                "role": "resistance",
+            })
+        else:
+            flipped_sup.append({**s, "role": "support", "flipped": False})
+    # de-dupe by price proximity
+    def dedupe(items):
+        items = sorted(items, key=lambda x: -x.get("strength", 1))
+        out = []
+        for it in items:
+            if any(abs(it["price"] - o["price"]) / max(o["price"], 1e-9) < 0.008 for o in out):
+                # keep stronger
+                continue
+            out.append(it)
+        return out
+    return dedupe(flipped_sup), dedupe(flipped_res)
+
+
 def compute_area_of_value(
     df: pd.DataFrame,
-    lookback: int = 80,
+    lookback: int = 100,
     tolerance_pct: float = 0.015,
 ) -> Dict[str, Any]:
     """
-    Rayner-style Area of Value for charting.
-    Returns support/resistance swing levels, MA zone, and a primary band.
+    Rayner-style Area of Value with quality scoring:
+      - swing clusters + touch count
+      - S/R role flip after breakout
+      - round-number levels
+      - clean chart: top-2 S/R + AoV band + SMA200 (+ EMA50)
     """
     from utils.indicators import sma, ema
 
@@ -262,29 +394,65 @@ def compute_area_of_value(
         "zone_low": None,
         "zone_high": None,
         "zone_label": "",
-        "levels": [],  # for chart lines: {price, title, color, style}
+        "levels": [],
+        "level_details": [],
     }
     if df is None or len(df) < 30:
         return empty
 
     recent = df.iloc[-lookback:] if len(df) >= lookback else df
     price = float(df["Close"].iloc[-1])
-    swings = get_recent_swings(recent, left=3, right=3, max_points=6)
+    swings = get_recent_swings(recent, left=3, right=3, max_points=10)
 
-    supports = sorted({round(float(p), 4) for _, p in swings.get("lows", [])}, reverse=True)
-    resistances = sorted({round(float(p), 4) for _, p in swings.get("highs", [])})
+    raw_lows = [p for _, p in swings.get("lows", [])]
+    raw_highs = [p for _, p in swings.get("highs", [])]
 
-    # Keep levels near price (±12%)
-    def near(levels, pct=0.12):
+    # Cluster nearby swings
+    sup_clusters = _cluster_levels(raw_lows, tol_pct=0.012)
+    res_clusters = _cluster_levels(raw_highs, tol_pct=0.012)
+
+    # Enrich with actual touch counts on recent bars
+    for c in sup_clusters:
+        t = _count_touches(recent, c["price"], tol_pct=0.012)
+        c["touches"] = max(c["touches"], t)
+        c["strength"] = c["touches"]
+    for c in res_clusters:
+        t = _count_touches(recent, c["price"], tol_pct=0.012)
+        c["touches"] = max(c["touches"], t)
+        c["strength"] = c["touches"]
+
+    # S/R flip
+    supports, resistances = _apply_sr_flip(sup_clusters, res_clusters, price)
+
+    # Round numbers as weak-but-real levels
+    for rn in _round_numbers_near(price):
+        t = _count_touches(recent, rn, tol_pct=0.008)
+        strength = 1 + min(t, 3)
+        if rn < price * 0.998:
+            supports.append({
+                "price": rn, "touches": t, "strength": strength,
+                "role": "support", "flipped": False, "round": True,
+            })
+        elif rn > price * 1.002:
+            resistances.append({
+                "price": rn, "touches": t, "strength": strength,
+                "role": "resistance", "flipped": False, "round": True,
+            })
+
+    # Keep levels near price, sort by strength
+    def near_filter(items, pct=0.14):
         out = []
-        for lv in levels:
+        for it in items:
+            lv = it["price"]
             if price > 0 and abs(lv - price) / price <= pct:
-                out.append(lv)
-        return out[:4]
+                out.append(it)
+        out.sort(key=lambda x: (-x.get("strength", 1), abs(x["price"] - price)))
+        return out
 
-    supports = near(supports)
-    resistances = near(resistances)
+    supports = near_filter(supports)[:5]
+    resistances = near_filter(resistances)[:5]
 
+    # MAs
     e20 = e50 = s200 = None
     try:
         e20 = float(ema(df["Close"], 20).iloc[-1])
@@ -296,16 +464,37 @@ def compute_area_of_value(
     except Exception:
         pass
 
-    # Primary zone: nearest support cluster or EMA band
+    # Primary AoV: strongest support below/near price (or resistance for shorts context)
     zone_low = zone_high = None
     zone_label = ""
-    if supports:
-        # band around nearest support below or near price
-        below = [s for s in supports if s <= price * 1.01]
-        ref = below[0] if below else supports[0]
+    best_sup = None
+    for s in supports:
+        if s["price"] <= price * 1.015:
+            best_sup = s
+            break
+    best_res = None
+    for r in resistances:
+        if r["price"] >= price * 0.985:
+            best_res = r
+            break
+
+    if best_sup and (not best_res or best_sup.get("strength", 1) >= best_res.get("strength", 1) * 0.7
+                     or abs(best_sup["price"] - price) <= abs((best_res or best_sup)["price"] - price)):
+        ref = best_sup["price"]
         zone_low = round(ref * (1 - tolerance_pct), 4)
         zone_high = round(ref * (1 + tolerance_pct), 4)
-        zone_label = f"Поддержка (свинг) ≈ {ref}"
+        tag = "перевёрнутая S/R" if best_sup.get("flipped") else (
+            "круглое число" if best_sup.get("round") else "свинг"
+        )
+        zone_label = f"Поддержка ({tag}) ≈ {ref} · касаний {best_sup.get('touches', 1)}"
+    elif best_res:
+        ref = best_res["price"]
+        zone_low = round(ref * (1 - tolerance_pct), 4)
+        zone_high = round(ref * (1 + tolerance_pct), 4)
+        tag = "перевёрнутая S/R" if best_res.get("flipped") else (
+            "круглое число" if best_res.get("round") else "свинг"
+        )
+        zone_label = f"Сопротивление ({tag}) ≈ {ref} · касаний {best_res.get('touches', 1)}"
     elif e20 is not None and e50 is not None:
         zone_low = round(min(e20, e50), 4)
         zone_high = round(max(e20, e50), 4)
@@ -315,37 +504,58 @@ def compute_area_of_value(
         zone_high = round(e50 * (1 + tolerance_pct), 4)
         zone_label = f"EMA50 ≈ {round(e50, 4)}"
 
-    # If price is closer to resistance, prefer resistance zone (for shorts / context)
-    if resistances:
-        above = [r for r in resistances if r >= price * 0.99]
-        if above:
-            ref_r = above[0]
-            # only override if clearly nearer to resistance than support
-            dist_r = abs(ref_r - price)
-            dist_s = abs((supports[0] if supports else ref_r) - price) if supports else dist_r * 2
-            if dist_r < dist_s * 0.85:
-                zone_low = round(ref_r * (1 - tolerance_pct), 4)
-                zone_high = round(ref_r * (1 + tolerance_pct), 4)
-                zone_label = f"Сопротивление (свинг) ≈ {ref_r}"
-
+    # ---- Clean chart levels: top-2 S, top-2 R, AoV, SMA200, EMA50 ----
     levels = []
     if zone_low is not None and zone_high is not None:
-        levels.append({"price": zone_low, "title": "AoV↓", "color": "#22c55e", "style": 2})
-        levels.append({"price": zone_high, "title": "AoV↑", "color": "#22c55e", "style": 2})
-    for s in supports[:3]:
-        levels.append({"price": s, "title": "Support", "color": "#4ade80", "style": 0})
-    for r in resistances[:3]:
-        levels.append({"price": r, "title": "Resist", "color": "#f87171", "style": 0})
-    if e20 is not None:
-        levels.append({"price": round(e20, 4), "title": "EMA20", "color": "#60a5fa", "style": 1})
-    if e50 is not None:
-        levels.append({"price": round(e50, 4), "title": "EMA50", "color": "#a78bfa", "style": 1})
+        levels.append({"price": zone_low, "title": "AoV↓", "color": "#22c55e", "style": 0, "key": True})
+        levels.append({"price": zone_high, "title": "AoV↑", "color": "#22c55e", "style": 0, "key": True})
+        levels.append({
+            "price": round((zone_low + zone_high) / 2, 4),
+            "title": "Зона ценности",
+            "color": "rgba(34,197,94,0.35)",
+            "style": 0,
+            "key": True,
+        })
+
+    for s in supports[:2]:
+        title = "Support★" if s.get("strength", 1) >= 3 else "Support"
+        if s.get("flipped"):
+            title = "Support(flip)"
+        if s.get("round"):
+            title = "Support(круг)"
+        levels.append({
+            "price": s["price"],
+            "title": title,
+            "color": "#4ade80",
+            "style": 0,
+            "key": True,
+            "strength": s.get("strength", 1),
+        })
+    for r in resistances[:2]:
+        title = "Resist★" if r.get("strength", 1) >= 3 else "Resist"
+        if r.get("flipped"):
+            title = "Resist(flip)"
+        if r.get("round"):
+            title = "Resist(круг)"
+        levels.append({
+            "price": r["price"],
+            "title": title,
+            "color": "#f87171",
+            "style": 0,
+            "key": True,
+            "strength": r.get("strength", 1),
+        })
+
     if s200 is not None:
-        levels.append({"price": round(s200, 4), "title": "SMA200", "color": "#fbbf24", "style": 0})
+        levels.append({"price": round(s200, 4), "title": "SMA200", "color": "#fbbf24", "style": 0, "key": True})
+    if e50 is not None:
+        levels.append({"price": round(e50, 4), "title": "EMA50", "color": "#a78bfa", "style": 1, "key": True})
+    # EMA20 only in legend, not as extra line (less noise)
+    # keep in data for legend
 
     return {
-        "support_levels": supports,
-        "resistance_levels": resistances,
+        "support_levels": [s["price"] for s in supports[:3]],
+        "resistance_levels": [r["price"] for r in resistances[:3]],
         "ema20": round(e20, 4) if e20 is not None else None,
         "ema50": round(e50, 4) if e50 is not None else None,
         "sma200": round(s200, 4) if s200 is not None else None,
@@ -353,5 +563,9 @@ def compute_area_of_value(
         "zone_high": zone_high,
         "zone_label": zone_label,
         "levels": levels,
+        "level_details": {
+            "supports": supports[:3],
+            "resistances": resistances[:3],
+        },
         "last_price": round(price, 4),
     }
